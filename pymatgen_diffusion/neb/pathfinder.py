@@ -4,9 +4,9 @@
 
 import warnings
 import itertools
+from operator import attrgetter
 
 import numpy as np
-# from numpy import linalg as LA
 # import copy
 
 from pymatgen.core import Structure, PeriodicSite
@@ -218,9 +218,6 @@ class IDPPSolver:
             target_dists.append(self.structures[ni+1].distance_matrix)
         self.target_dists = target_dists
 
-        # adjust path
-        self._screen()
-        self.structures
         return self.run(**run_kwargs)
 
     def run(self, maxiter=1000, tol=1e-5, gtol=1e-3, step_size=0.05,
@@ -279,8 +276,8 @@ class IDPPSolver:
             # Get the sets of objective functions, true and total force
             # matrices.
             funcs, true_forces = self._get_funcs_and_forces(coords)
-            # funcs, true_forces, neighbor_26_temp = self._get_funcs_and_forces(
-                # coords, d_3_4, d_3_9, d_3_10, d_26)
+            # funcs, true_forces, neighbor_26_temp =
+            #   self._get_funcs_and_forces(coords, d_3_4, d_3_9, d_3_10, d_26)
             tot_forces = self._get_total_forces(coords, true_forces,
                                                 spring_const=spring_const)
             # neighbor_26.append(neighbor_26_temp)
@@ -439,16 +436,18 @@ class IDPPSolver:
 
         return np.array(total_forces)
 
-    def clash_removal(self, path, k_steric=5.0, steric_threshold=1.1,
-                      step_size=0.05, max_disp=0.1, max_iter=200, gtol=1e-3):
+    def clash_removal(self, path, step_size=0.05, max_disp=0.1, max_iter=200,
+                      gtol=1e-3, **kwargs):
         """
         Conduct steric clash removal based on IDPP path.
 
-        path -- (list of Structure) idpp path generated. The first and last
+        path (list of Structure): idpp path generated. The first and last
             structures coorepond to the initial and final structures.
-        k_steric -- spring constant for steric hinderance
-        steric_threshold -- atoms with internuclear distance smaller than this
-            threshold will be subject to spring force
+        k_steric (float): spring constant for steric hinderance.
+        steric_threshold (float): atoms with internuclear distance smaller
+            than this threshold will be subject to spring force.
+        **kwargs: keyword arguments for _get_clash_forces_and_energy
+
         """
         latt = self.structures[0].lattice
         images = path[1:-1]
@@ -465,12 +464,10 @@ class IDPPSolver:
                 self.nimages, self.natoms, 3)
         for n in range(max_iter):
             # get forces and energies
-            # TODO calculate energy and use it as iteration criteria
+            # TODO calculate energy and use it as part of iteration criteria
             forces, energies = self._get_clash_forces_and_energy(
-                    image_dists=image_dists,
-                    image_coords=image_coords,
-                    steric_threshold=steric_threshold,
-                    k_steric=k_steric)
+                images=images, image_coords=image_coords,
+                image_dists=image_dists, **kwargs)
 
             disp_mat = step_size * forces
             disp_mat = np.where(np.abs(disp_mat) > max_disp,
@@ -505,9 +502,17 @@ class IDPPSolver:
         clash_removed_path.append(self.structures[-1])
         return clash_removed_path
 
-    def _get_clash_forces_and_energy(self, image_dists, image_coords,
-                                     steric_threshold, k_steric):
+    def _get_clash_forces_and_energy(self, images, image_dists, image_coords,
+                                     k_steric=5.0, steric_threshold=1.1,
+                                     k_bonded=0.05, max_bond_length=2.9,
+                                     **kwargs):
         """
+        calculate forces and energies
+
+        Args:
+        k_steric (float): spring constant for steric hinderance
+        steric_shreshold (float): atoms with internulcear distance smaller than
+            this value will be subject to repulsive force.
 
         """
         # find steric hindered atoms
@@ -517,8 +522,12 @@ class IDPPSolver:
                 if (image_dists[ni][i][j] < steric_threshold
                         and image_dists[ni][i][j] > 0):
                     steric_hindered.append([ni, i, j])
-        # get force
-        forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
+        # find bonded neighbors
+        bonded_neighbors = self._find_bonded_neighbors(
+            images=images, max_bond_length=max_bond_length, **kwargs)
+        # calculate repulsive forces
+        repulsive_forces = np.zeros((self.nimages, self.natoms, 3),
+                                    dtype=np.float64)
         for case in steric_hindered:
             ni, i, j = case[0], case[1], case[2]
             coord1 = image_coords[ni][i]
@@ -526,11 +535,64 @@ class IDPPSolver:
             direction = self.get_unit_vector(coord1 - coord2)
             delta_d = np.linalg.norm(coord1 - coord2) - steric_threshold
             f = k_steric * delta_d**2 * direction
-            forces[ni][i] = f
-            forces[ni][j] = - f
-        # get energy
+            repulsive_forces[ni][i] += f
+            repulsive_forces[ni][j] += - f
+        # calculate attractive forces
+        attractive_forces = np.zeros((self.nimages, self.natoms, 3),
+                                     dtype=np.float64)
+        for case in bonded_neighbors:
+            ni, i, indices = case[0], case[1], case[2]
+            coord_bonded = image_coords[ni][i]
+            for index in indices:
+                coord_pulling = image_coords[ni][index]
+                direction = self.get_unit_vector(coord_pulling - coord_bonded)
+                delta_d = (np.linalg.norm(coord_bonded - coord_pulling)
+                           - max_bond_length)
+                f = k_bonded * delta_d**2 * direction
+                attractive_forces[ni][i] += f
+        clash_forces = repulsive_forces + attractive_forces
+        # TODO calculate energy
         energies = np.zeros(self.nimages)
-        return (forces, energies)
+        return (clash_forces, energies)
+
+    def _find_bonded_neighbors(self, images, r_threshold=5, r_tol=0.2,
+                               max_bond_length=2.9):
+        """
+        Normally, no bond information is given, so atoms connecting by virtual
+        bonds to its closest neighbors will be returned.
+
+        Args:
+            r (float): radius of the search range.
+            r_tol (float): tolerance in deciding whcih atoms are the nearest
+                ones.
+
+        """
+        # find neighbors and sort them on distance
+        neighbors = []
+        for ni in range(self.nimages):
+            temp = images[ni].get_all_neighbors(r_threshold)
+
+            for na in range(self.natoms):
+                if (len(temp[na]) == 0):
+                    raise Exception('No neighbors found in image%02d atom%d'
+                                    % (ni, na))
+                temp[na].sort(key=attrgetter('distance'))
+            neighbors.append(temp)
+        # determine whcih neighbor atoms need bonding
+        case = []
+        for ni in range(self.nimages):
+            for na in range(self.natoms):
+                min_distance = neighbors[ni][na][0].distance
+                if (min_distance > max_bond_length):
+                    # if the nearest neighbor is far enough then this atom
+                    # needs bonding
+                    indices = []
+                    # TODO all neighbors needs bonding or only atoms within
+                    # min_distance + r_tol?
+                    for neighbor_site in neighbors[ni][na]:
+                        indices.append(neighbor_site.index)
+                    case.append([ni, na, indices])
+        return case
 
 
 class MigrationPath:
