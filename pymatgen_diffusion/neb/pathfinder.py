@@ -2,13 +2,16 @@
 # Copyright (c) Materials Virtual Lab.
 # Distributed under the terms of the BSD License.
 
+import warnings
+import itertools
+
+import numpy as np
+# from numpy import linalg as LA
+# import copy
+
 from pymatgen.core import Structure, PeriodicSite
 from pymatgen.core.periodic_table import get_el_sp
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-
-import warnings
-import numpy as np
-import itertools
 
 __author__ = "Iek-Heng Chu"
 __version__ = "1.0"
@@ -24,9 +27,9 @@ Algorithms for NEB migration path analysis.
 
 class IDPPSolver:
     """
-    A solver using image dependent pair potential (IDPP) algo to get an improved
-    initial NEB path. For more details about this algo, please refer to
-    Smidstrup et al., J. Chem. Phys. 140, 214106 (2014).
+    A solver using image dependent pair potential (IDPP) algo to get an
+    improved initial NEB path. For more details about this algo, please
+    refer to Smidstrup et al., J. Chem. Phys. 140, 214106 (2014).
 
     """
 
@@ -48,19 +51,16 @@ class IDPPSolver:
         # algo.
         init_coords = []
 
-        # Construct the set of target distance matrices via linear interpolation
-        # between those of end-point structures.
+        # Construct the set of target distance matrices via linear interpola-
+        # tion between those of end-point structures.
         for i in range(1, nimages + 1):
             # Interpolated distance matrices
-            dist = structures[0].distance_matrix + i / (nimages + 1) * (
-                    structures[-1].distance_matrix - structures[0].distance_matrix)
-
-            target_dists.append(dist) # linear interpolated distance
-
+            dist = (structures[0].distance_matrix
+                    + i / (nimages + 1) * (structures[-1].distance_matrix
+                    - structures[0].distance_matrix))
+            # linear interpolated distance
+            target_dists.append(dist)   # with shape in [ni,na,na]
         target_dists = np.array(target_dists)
-
-        # Set of translational vector matrices (anti-symmetric) for the images.
-        translations = np.zeros((nimages, natoms, natoms, 3), dtype=np.float64)
 
         # A set of weight functions. It is set as 1/d^4 for each image. Here,
         # we take d as the average of the target distance matrix and the actual
@@ -72,23 +72,156 @@ class IDPPSolver:
             weights[ni] = 1.0 / (avg_dist ** 4 +
                                  np.eye(natoms, dtype=np.float64) * 1e-8)
 
+        # Set of translational vector matrices (anti-symmetric) for the images.
+        translations = np.zeros((nimages, natoms, natoms, 3), dtype=np.float64)
         for ni, i in itertools.product(range(nimages + 2), range(natoms)):
             frac_coords = structures[ni][i].frac_coords
             init_coords.append(latt.get_cartesian_coords(frac_coords))
-
+            # ?consider periodic boundary condition?
             if ni not in [0, nimages + 1]:
                 for j in range(i + 1, natoms):
                     img = latt.get_distance_and_image(
                         frac_coords, structures[ni][j].frac_coords)[1]
                     translations[ni - 1, i, j] = latt.get_cartesian_coords(img)
-                    translations[ni - 1, j, i] = -latt.get_cartesian_coords(img)
+                    translations[ni - 1, j, i] = -latt.get_cartesian_coords(
+                        img)
 
-        self.init_coords = np.array(init_coords).reshape(nimages + 2, natoms, 3)
+        self.init_coords = np.array(init_coords).reshape(
+            nimages + 2, natoms, 3)
         self.translations = translations
         self.weights = weights
         self.structures = structures
         self.target_dists = target_dists
         self.nimages = nimages
+        self.natoms = natoms
+
+    def _screen(self, target_dists: np.array, coords, r=5):
+        """
+        Screen target_dsit assuming atoms behave like rigid balls.
+        Nearest neighbors of each atoms will be recognized and will
+        push atoms away if clash occurs; pull them over if there is
+        too big a gap.
+
+        Args:
+            target_dists: linear interpolated distance for images
+            between initial and final structures.
+            coords: cartesian coordinates of all images including
+            initial and final structures.
+            r: neighbor range in angstrom
+
+        Return:
+            [target_dists] adjusted target_dists.
+        """
+        # DEBUG
+        # print(">>> _screen")
+
+        natoms = self.structures[0].num_sites
+        # TODO dynamically setting r, max_bond_length and radius
+        max_bond_length = 4.09
+        radius = 1.44
+        images = []
+        # generate the image structures from coords
+        for ni in range(1, self.nimages+1):
+            new_sites = []
+            for site, cart_coords in zip(self.structures[ni],
+                                         coords[ni]):
+                new_site = PeriodicSite(
+                    site.species, coords=cart_coords,
+                    lattice=site.lattice, coords_are_cartesian=True,
+                    properties=site.properties)
+                new_sites.append(new_site)
+            images.append(Structure.from_sites(new_sites))
+        # find nearest neighbors within r angstroms
+        neighbors = []
+        for ni in range(self.nimages):
+            neighbors.append(images[ni].get_all_neighbors(r))
+        neighbor_indices = []
+        for ni in range(self.nimages):
+            index_temp = []
+            for na in range(natoms):
+                temp = []
+                for nn in range(len(neighbors[ni][na])):
+                    temp.append(neighbors[ni][na][nn].index)
+                index_temp.append(temp)
+            neighbor_indices.append(index_temp)
+        # DEBUG
+        neighbor_26 = []
+        for ni in range(self.nimages):
+            neighbor_26.append(neighbor_indices[ni][25])
+
+        # get distance matrix of each images
+        dists = []
+        for i in range(self.nimages):
+            dists.append(images[i].distance_matrix)
+        # # unit vector of all neighbors towrads center atom
+        # # unit_vec[ni][na][3]
+        # unit_vec = []
+        # for ni in range(self.nimages):
+        #     temp_vec = np.zeros([natoms, 3])
+        #     for na in range(natoms):
+        #         for nn in range(len(neighbors[ni][na])):
+        #             temp_vec[na] += (images[ni].cart_coords[na]
+        #                              - neighbors[ni][na][nn].site.coords)
+        #         temp_vec[na] = temp_vec[na] / LA.norm(temp_vec[na])
+        #     unit_vec.append(temp_vec)
+
+        # adjust anomalies in neighbors
+        # neighbors[ni][na][nn][PerodicSite] --> target_dist[ni][na][na]
+
+        # for ni in range(self.nimages):
+        #     anomalies_temp = []
+        #     isTooFar = False
+        #     isTooClose = False
+        #     for na, nn in itertools.product(range(natoms),
+        #                                     range(len(neighbors[ni][na]))):
+        #         d_temp = neighbors[ni][na][ni].distance
+        #         diff_bond = d_temp - max_bond_length
+        #         diff_radius = 2 * radius - d_temp
+        #         if (diff_radius > 0):
+        #             isTooClose = True
+        #         if (diff_bond > 0):
+        #             isTooFar = True
+        #         if (isTooClose):
+        #             indices_temp.append(neighbors[ni][na][nn].index)
+        #             vector_tmep.append()
+        #         if (isTooFar):
+        #             indices_temp.append(neighbors[ni][na][nn].index)
+        #             vector_tmep.append()
+            # images[ni].translate_sites(indices = indices_temp,
+            #                            vector = vector_temp)
+        # obtain new target_distance
+        for ni in range(self.nimages):
+            # for i, j in itertools.combinations(range(natoms), 2):
+            for i in range(natoms):
+                for j in range(i+1, natoms):
+                    # d_ij = target_dists[ni][i][j]
+                    # if (d_ij < 2 * radius and d_ij > 0):
+                    #     # if too close
+                    #     target_dists[ni][i][j] = 2 * radius
+                    #     target_dists[ni][j][i] = 2 * radius
+                    if (dists[ni][i][j] < 2 * radius):
+                        # if too close
+                        target_dists[ni][i][j] += 1
+                        target_dists[ni][j][i] += 1
+                    if (j in neighbor_indices[ni][i]
+                            and dists[ni][i][j] > max_bond_length):
+                        # if too far
+                        # this may push atoms even further
+                        target_dists[ni][i][j] = max_bond_length
+                        target_dists[ni][j][i] = max_bond_length
+        return (target_dists, neighbor_26)
+
+    def rerun(self, **run_kwargs):
+        # update target distance from path
+        target_dists = []
+        for ni in range(self.nimages):
+            target_dists.append(self.structures[ni+1].distance_matrix)
+        self.target_dists = target_dists
+
+        # adjust path
+        self._screen()
+        self.structures
+        return self.run(**run_kwargs)
 
     def run(self, maxiter=1000, tol=1e-5, gtol=1e-3, step_size=0.05,
             max_disp=0.05, spring_const=5.0, species=None):
@@ -104,13 +237,14 @@ class IDPPSolver:
                 process.
             tol (float): Tolerance of the change of objective functions between
                 consecutive steps.
-            gtol (float): Tolerance of maximum force component (absolute value).
+            gtol (float): Tolerance of maximum force component (absolute
+                value).
             step_size (float): Step size associated with the displacement of
                 the atoms during the minimization process.
             max_disp (float): Maximum allowed atomic displacement in each
                 iteration.
-            spring_const (float): A virtual spring constant used in the NEB-like
-                        relaxation process that yields so-called IDPP path.
+            spring_const (float): A virtual spring constant used in the NEB-
+                like relaxation process that yields so-called IDPP path.
             species (list of string): If provided, only those given species are
                 allowed to move. The atomic positions of other species are
                 obtained via regular linear interpolation approach.
@@ -132,15 +266,24 @@ class IDPPSolver:
 
             if len(indices) == 0:
                 raise ValueError("The given species are not in the system!")
-
+        # DEBUG
+        # res = []
+        # # force = []
+        # d_3_4 = []
+        # d_3_10 = []
+        # d_3_9 = []
+        # d_26 = []
         # Iterative minimization
+        # neighbor_26 = []
         for n in range(maxiter):
             # Get the sets of objective functions, true and total force
             # matrices.
             funcs, true_forces = self._get_funcs_and_forces(coords)
+            # funcs, true_forces, neighbor_26_temp = self._get_funcs_and_forces(
+                # coords, d_3_4, d_3_9, d_3_10, d_26)
             tot_forces = self._get_total_forces(coords, true_forces,
                                                 spring_const=spring_const)
-
+            # neighbor_26.append(neighbor_26_temp)
             # Each atom is allowed to move up to max_disp
             disp_mat = step_size * tot_forces[:, indices, :]
             disp_mat = np.where(np.abs(disp_mat) > max_disp,
@@ -151,7 +294,14 @@ class IDPPSolver:
             max_force = np.abs(tot_forces[:, indices, :]).max()
             tot_res = np.sum(np.abs(old_funcs - funcs))
 
+            # DEBUG
+            # res.append(tot_res)
+            # force.append(max_force)
+            # print(">>> delta energy", tot_res)
+            # print(">>> max force", max_force)
             if tot_res < tol and max_force < gtol:
+                # print(">>> delta energy", res)
+                # print(">>> max force", force)
                 break
 
             old_funcs = funcs
@@ -165,7 +315,8 @@ class IDPPSolver:
             # generate the improved image structure
             new_sites = []
 
-            for site, cart_coords in zip(self.structures[ni + 1], coords[ni + 1]):
+            for site, cart_coords in zip(self.structures[ni + 1],
+                                         coords[ni + 1]):
                 new_site = PeriodicSite(
                     site.species, coords=cart_coords,
                     lattice=site.lattice, coords_are_cartesian=True,
@@ -176,8 +327,8 @@ class IDPPSolver:
 
         # Also include end-point structure.
         idpp_structures.append(self.structures[-1])
-
         return idpp_structures
+        # return (idpp_structures, d_3_4, d_3_9, d_3_10, d_26, neighbor_26)
 
     @classmethod
     def from_endpoints(cls, endpoints, nimages=5, sort_tol=1.0):
@@ -187,15 +338,16 @@ class IDPPSolver:
         interpolation.
 
         Args:
-            endpoints (list of Structure objects): The two end-point structures.
+            endpoints (list of Structure objects): The two end-point
+                structures.
             nimages (int): Number of images between the two end-points.
-            sort_tol (float): Distance tolerance (in Angstrom) used to match the
-            atomic indices between start and end structures. Need to increase the
-            value in some cases.
+            sort_tol (float): Distance tolerance (in Angstrom) used to match
+            the atomic indices between start and end structures. Need to
+            increase the value in some cases.
         """
         try:
-            images = endpoints[0].interpolate(endpoints[1], nimages=nimages + 1,
-                                              autosort_tol=sort_tol)
+            images = endpoints[0].interpolate(
+                endpoints[1], nimages=nimages + 1, autosort_tol=sort_tol)
         except Exception as e:
             if "Unable to reliably match structures " in str(e):
                 warnings.warn("Auto sorting is turned off because it is unable"
@@ -215,6 +367,8 @@ class IDPPSolver:
         i.e. "effective true forces"
 
         x: coordinates of each images
+
+        return: funcs, true_forces
         """
         funcs = []
         funcs_prime = []
@@ -222,12 +376,21 @@ class IDPPSolver:
         natoms = trans.shape[1]
         weights = self.weights
         target_dists = self.target_dists
+        # target_dists, neighbor_26_tmep = self._screen(self.target_dists, x)
+
+        # # DEBUG
+        # for ni in range(self.nimages):
+        #     probe1.append(target_dists[ni][2][3])
+        #     probe2.append(target_dists[ni][2][8])
+        #     probe3.append(target_dists[ni][2][9])
+        #     probe4.append(target_dists[ni][25])
 
         for ni in range(len(x) - 2):
-            vec = [x[ni + 1, i] - x[ni + 1] - trans[ni, i] for i in range(natoms)]
-            # vec = [x[ni+1,i]-x[ni+1] ] # DEBUG
+            vec = [x[ni + 1, i] - x[ni + 1] - trans[ni, i]
+                   for i in range(natoms)]
             trial_dist = np.linalg.norm(vec, axis=2)
-            aux = (trial_dist - target_dists[ni]) * weights[ni] / (trial_dist + np.eye(natoms, dtype=np.float64))
+            aux = ((trial_dist - target_dists[ni]) * weights[ni]
+                   / (trial_dist + np.eye(natoms, dtype=np.float64)))
 
             # Objective function
             func = np.sum((trial_dist - target_dists[ni]) ** 2 * weights[ni])
@@ -276,6 +439,99 @@ class IDPPSolver:
 
         return np.array(total_forces)
 
+    def clash_removal(self, path, k_steric=5.0, steric_threshold=1.1,
+                      step_size=0.05, max_disp=0.1, max_iter=200, gtol=1e-3):
+        """
+        Conduct steric clash removal based on IDPP path.
+
+        path -- (list of Structure) idpp path generated. The first and last
+            structures coorepond to the initial and final structures.
+        k_steric -- spring constant for steric hinderance
+        steric_threshold -- atoms with internuclear distance smaller than this
+            threshold will be subject to spring force
+        """
+        latt = self.structures[0].lattice
+        images = path[1:-1]
+        image_dists = []
+        for ni in range(self.nimages):
+            image_dists.append(images[ni].distance_matrix)  # in cart coords
+        image_coords = []
+        for ni, i in itertools.product(range(self.nimages),
+                                       range(self.natoms)):
+            # no getter for cart_coords attribute, so has to do this
+            frac_coord_temp = images[ni][i].frac_coords
+            image_coords.append(latt.get_cartesian_coords(frac_coord_temp))
+        image_coords = np.array(image_coords).reshape(
+                self.nimages, self.natoms, 3)
+        for n in range(max_iter):
+            # get forces and energies
+            # TODO calculate energy and use it as iteration criteria
+            forces, energies = self._get_clash_forces_and_energy(
+                    image_dists=image_dists,
+                    image_coords=image_coords,
+                    steric_threshold=steric_threshold,
+                    k_steric=k_steric)
+
+            disp_mat = step_size * forces
+            disp_mat = np.where(np.abs(disp_mat) > max_disp,
+                                np.sign(disp_mat) * max_disp,
+                                disp_mat)
+            image_coords += disp_mat
+            # check if meets tolerance requirements
+            max_force = np.abs(forces).max()
+            if (max_force < gtol):
+                print("max_force < gtol")
+                break
+        else:
+            warnings.warn(
+                "Maximum iteration number is reached without convergence!",
+                UserWarning)
+
+        # generate the improved image structure
+        clash_removed_path = [self.structures[0]]
+        for ni in range(self.nimages):
+            new_sites = []
+            for site, cart_coords in zip(self.structures[ni + 1],
+                                         image_coords[ni]):
+                new_site = PeriodicSite(
+                    site.species, coords=cart_coords,
+                    lattice=site.lattice, coords_are_cartesian=True,
+                    properties=site.properties)
+                new_sites.append(new_site)
+
+            clash_removed_path.append(Structure.from_sites(new_sites))
+
+        # Also include end-point structure.
+        clash_removed_path.append(self.structures[-1])
+        return clash_removed_path
+
+    def _get_clash_forces_and_energy(self, image_dists, image_coords,
+                                     steric_threshold, k_steric):
+        """
+
+        """
+        # find steric hindered atoms
+        steric_hindered = []
+        for ni in range(self.nimages):
+            for i, j in itertools.combinations(range(self.natoms), 2):
+                if (image_dists[ni][i][j] < steric_threshold
+                        and image_dists[ni][i][j] > 0):
+                    steric_hindered.append([ni, i, j])
+        # get force
+        forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
+        for case in steric_hindered:
+            ni, i, j = case[0], case[1], case[2]
+            coord1 = image_coords[ni][i]
+            coord2 = image_coords[ni][j]
+            direction = self.get_unit_vector(coord1 - coord2)
+            delta_d = np.linalg.norm(coord1 - coord2) - steric_threshold
+            f = k_steric * delta_d**2 * direction
+            forces[ni][i] = f
+            forces[ni][j] = - f
+        # get energy
+        energies = np.zeros(self.nimages)
+        return (forces, energies)
+
 
 class MigrationPath:
     """
@@ -304,12 +560,16 @@ class MigrationPath:
 
     def __repr__(self):
         return "Path of %.4f A from %s [%.3f, %.3f, %.3f] " \
-               "(ind: %d, Wyckoff: %s) to %s [%.3f, %.3f, %.3f] (ind: %d, Wyckoff: %s)" \
-               % (self.length, self.isite.specie, self.isite.frac_coords[0], self.isite.frac_coords[1],
-                  self.isite.frac_coords[2],
-                  self.iindex, self.symm_structure.wyckoff_symbols[self.iindex],
-                  self.esite.specie, self.esite.frac_coords[0], self.esite.frac_coords[1], self.esite.frac_coords[2],
-                  self.eindex, self.symm_structure.wyckoff_symbols[self.eindex])
+               "(ind: %d, Wyckoff: %s) to %s [%.3f, %.3f, %.3f] " \
+               "(ind: %d, Wyckoff: %s)" \
+               % (self.length, self.isite.specie, self.isite.frac_coords[0],
+                  self.isite.frac_coords[1], self.isite.frac_coords[2],
+                  self.iindex,
+                  self.symm_structure.wyckoff_symbols[self.iindex],
+                  self.esite.specie, self.esite.frac_coords[0],
+                  self.esite.frac_coords[1], self.esite.frac_coords[2],
+                  self.eindex,
+                  self.symm_structure.wyckoff_symbols[self.eindex])
 
     @property
     def length(self):
@@ -349,14 +609,14 @@ class MigrationPath:
                 assumed. The initial and ending positions are assumed to be
                 the initial and ending positions of the interstitial, and all
                 other sites of the same specie are removed. E.g., if NEBPaths
-                were obtained using a Li4Fe4P4O16 structure, vac_mode=True would
-                generate structures with formula Li3Fe4P4O16, while
+                were obtained using a Li4Fe4P4O16 structure, vac_mode=True
+                would generate structures with formula Li3Fe4P4O16, while
                 vac_mode=False would generate structures with formula
                 LiFe4P4O16.
             idpp (bool): Defaults to False. If True, the generated structures
                 will be run through the IDPPSolver to generate a better guess
                 for the minimum energy path.
-            \*\*idpp_kwargs: Passthrough kwargs for the IDPPSolver.run.
+            **idpp_kwargs: Passthrough kwargs for the IDPPSolver.run.
 
         Returns:
             [Structure] Note that the first site of each structure is always
@@ -397,7 +657,7 @@ class MigrationPath:
 
         Args:
             fname (str): File name.
-            \*\*kwargs: Kwargs supported by NEBPath.get_structures.
+            **kwargs: Kwargs supported by NEBPath.get_structures.
         """
         sites = []
         for st in self.get_structures(**kwargs):
@@ -423,11 +683,13 @@ class DistinctPathFinder:
                 "Li".
             max_path_length (float): Maximum length of NEB path in the unit
                 of Angstrom. Defaults to None, which means you are setting the
-                value to the min cutoff until finding 1D or >1D percolating paths.
+                value to the min cutoff until finding 1D or >1D percolating
+                paths.
             symprec (float): Symmetry precision to determine equivalence.
-            perc_mode(str): The percolating type. Default to ">1d", because usually
-                it is used to find possible NEB paths to form percolating networks.
-                If you just want to check the min 1D percolation, set it to "1d".
+            perc_mode(str): The percolating type. Default to ">1d", because
+                usually it is used to find possible NEB paths to form
+                percolating networks. If you just want to check the min 1D
+                percolation, set it to "1d".
         """
         self.structure = structure
         self.migrating_specie = get_el_sp(migrating_specie)
@@ -459,7 +721,8 @@ class DistinctPathFinder:
         elif junc == 0:
             path_cutoff = sorted(distance_list, key=lambda d: d[1])[-1][1]
         else:
-            # distance_list are sorted as [[a0,a1,a2],[b0,b1,b2],[c0,c1,c2],...]
+            # distance_list are sorted as [[a0,a1,a2],[b0,b1,b2],
+            # [c0,c1,c2],...]
             # in which a0<a1<a2,b0<b1<b2,...
             # path_cutoff = max(a1,b1,c1,...), junc_cutoff=min(a2,b2,c2)
             path_cutoff = sorted(distance_list, key=lambda d: d[1])[-1][1]
@@ -486,7 +749,8 @@ class DistinctPathFinder:
                 for nn in self.symm_structure.get_neighbors(
                         site0, r=round(self.max_path_length, 3) + 0.01):
                     if nn.site.specie == self.migrating_specie:
-                        path = MigrationPath(site0, nn.site, self.symm_structure)
+                        path = MigrationPath(site0, nn.site,
+                                             self.symm_structure)
                         paths.add(path)
 
         return sorted(paths, key=lambda p: p.length)
@@ -500,7 +764,7 @@ class DistinctPathFinder:
         Args:
             fname (str): Filename
             nimages (int): Number of images per path.
-            \*\*kwargs: Passthrough kwargs to path.get_structures.
+            kwargs: Passthrough kwargs to path.get_structures.
         """
         sites = []
         for p in self.get_paths():
