@@ -5,13 +5,16 @@
 import warnings
 import itertools
 from operator import attrgetter
+from typing import List
 
 import numpy as np
 # import copy
 
 from pymatgen.core import Structure, PeriodicSite
+from pymatgen.core.structure import PeriodicNeighbor
 from pymatgen.core.periodic_table import get_el_sp
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.core.lattice import get_points_in_spheres
 
 __author__ = "Iek-Heng Chu"
 __version__ = "1.0"
@@ -436,8 +439,12 @@ class IDPPSolver:
 
         return np.array(total_forces)
 
-    def clash_removal(self, path, step_size=0.05, max_disp=0.1, max_iter=200,
-                      gtol=1e-3, **kwargs):
+    def clash_removal(self, path, moving_atoms=None,
+                      step_size=0.05, max_disp=0.1,
+                      max_iter=200, gtol=1e-3,
+                      step_update_method='decay',
+                      base_step=0.01, max_step=0.05,
+                      **kwargs):
         """
         Conduct steric clash removal based on IDPP path.
 
@@ -446,6 +453,7 @@ class IDPPSolver:
         k_steric (float): spring constant for steric hinderance.
         steric_threshold (float): atoms with internuclear distance smaller
             than this threshold will be subject to spring force.
+        moving_atoms (list): indices of atoms allowed to move.
         **kwargs: keyword arguments for _get_clash_forces_and_energy
 
         """
@@ -454,6 +462,7 @@ class IDPPSolver:
         image_dists = []
         for ni in range(self.nimages):
             image_dists.append(images[ni].distance_matrix)  # in cart coords
+
         image_coords = []
         for ni, i in itertools.product(range(self.nimages),
                                        range(self.natoms)):
@@ -462,20 +471,79 @@ class IDPPSolver:
             image_coords.append(latt.get_cartesian_coords(frac_coord_temp))
         image_coords = np.array(image_coords).reshape(
                 self.nimages, self.natoms, 3)
+
+        if moving_atoms is None:
+            moving_atoms = list(range(len(self.structures[0])))
+
+        # prepare for step_size update
+        max_force = float('inf')
+        initial_step_size = step_size
+
+        # get forces and disp_mat of first step
+        forces, energies, rpl_index, rpl_f, attr_index, attr_f \
+            = self._get_clash_forces_and_energy(
+                images=images,
+                image_coords=image_coords,
+                image_dists=image_dists,
+                **kwargs)
+        disp_mat = step_size * forces[:, moving_atoms, :]
+
+        # monitoring
+        attr_force_log = []
+        attr_index_log = []
+        rpl_force_log = []
+        rpl_index_log = []
+        disp_log = []
         for n in range(max_iter):
             # get forces and energies
             # TODO calculate energy and use it as part of iteration criteria
-            forces, energies = self._get_clash_forces_and_energy(
-                images=images, image_coords=image_coords,
-                image_dists=image_dists, **kwargs)
+            forces, energies, rpl_index, rpl_f, attr_index, attr_f \
+                = self._get_clash_forces_and_energy(
+                    images=images,
+                    image_coords=image_coords,
+                    image_dists=image_dists, **kwargs)
 
-            disp_mat = step_size * forces
+            # monitoring
+            attr_force_log.append(attr_f)
+            attr_index_log.append(attr_index)
+            rpl_force_log.append(rpl_f)
+            rpl_index_log.append(rpl_index)
+
+            # dynamically change step size
+            prev_max_force = max_force
+            max_force = np.abs(forces).max()
+
+            if (step_update_method == 'decay'):
+                decay = 0.01
+                if (max_force < prev_max_force):
+                    step_size = initial_step_size * 1/(1 + decay * n)
+            if (step_update_method == 'expo'):
+                if (max_force > prev_max_force):
+                    step_size = step_size * 0.5
+                    # reject last step
+                    image_coords -= disp_mat
+                    continue
+                if (max_force < prev_max_force):
+                    step_size = step_size * 1.2
+            if (step_update_method == 'triangular'):
+                if (max_force < prev_max_force):
+                    step_size = self._get_triangular_step(
+                        iteration=n, base_step=base_step, max_step=max_step)
+
+            # update coords
+            disp_mat = step_size * forces[:, moving_atoms, :]
             disp_mat = np.where(np.abs(disp_mat) > max_disp,
                                 np.sign(disp_mat) * max_disp,
                                 disp_mat)
-            image_coords += disp_mat
+            image_coords[:, moving_atoms] += disp_mat
+
+            # monitoring
+            # get max displacement of each iamges
+            scalar_disp = np.linalg.norm(disp_mat, axis=2)
+            max_scalar_disp = np.amax(scalar_disp, axis=1)
+            disp_log.append(max_scalar_disp)
+
             # check if meets tolerance requirements
-            max_force = np.abs(forces).max()
             if (max_force < gtol):
                 print("max_force < gtol")
                 break
@@ -500,7 +568,28 @@ class IDPPSolver:
 
         # Also include end-point structure.
         clash_removed_path.append(self.structures[-1])
-        return clash_removed_path
+        return (clash_removed_path,
+                attr_force_log, attr_index_log,
+                rpl_force_log, rpl_index_log,
+                disp_log)
+
+    @staticmethod
+    def _get_triangular_step(iteration: int, half_period=5,
+                             base_step=0.05, max_step=0.1):
+        """
+        Given the inputs, calculates the step_size that should be applicable
+        for this iteration using CLR technique from Anand Saha
+        (http://teleported.in/posts/cyclic-learning-rate/).
+        """
+        cycle = np.floor(1 + iteration/(2 * half_period))
+        x = np.abs(iteration/half_period - 2 * cycle + 1)
+        step = base_step + (max_step - base_step) * np.maximum(0, (1-x))
+        return step
+
+    @staticmethod
+    def _decay(iteration: int, initial_step_size, decay):
+        step_size = initial_step_size * 1/(1 + decay * iteration)
+        return step_size
 
     def _get_clash_forces_and_energy(self, images, image_dists, image_coords,
                                      k_steric=5.0, steric_threshold=1.1,
@@ -523,8 +612,11 @@ class IDPPSolver:
                         and image_dists[ni][i][j] > 0):
                     steric_hindered.append([ni, i, j])
         # find bonded neighbors
+        # TODO use image_coords to generate new image
+        # because image is not updated
         bonded_neighbors = self._find_bonded_neighbors(
-            images=images, max_bond_length=max_bond_length, **kwargs)
+            images=images, cart_coords=image_coords,
+            max_bond_length=max_bond_length, **kwargs)
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3),
                                     dtype=np.float64)
@@ -533,10 +625,15 @@ class IDPPSolver:
             coord1 = image_coords[ni][i]
             coord2 = image_coords[ni][j]
             direction = self.get_unit_vector(coord1 - coord2)
-            delta_d = np.linalg.norm(coord1 - coord2) - steric_threshold
+            delta_d = abs(np.linalg.norm(coord1 - coord2) - steric_threshold)
             f = k_steric * delta_d**2 * direction
             repulsive_forces[ni][i] += f
             repulsive_forces[ni][j] += - f
+        # monitor repulsive forces
+        scalar_rpl_force = np.linalg.norm(repulsive_forces, axis=2)
+        max_rpl_force_index = np.argmax(scalar_rpl_force, axis=1)
+        max_rpl_force = np.amax(scalar_rpl_force, axis=1)
+
         # calculate attractive forces
         attractive_forces = np.zeros((self.nimages, self.natoms, 3),
                                      dtype=np.float64)
@@ -546,49 +643,100 @@ class IDPPSolver:
             for index in indices:
                 coord_pulling = image_coords[ni][index]
                 direction = self.get_unit_vector(coord_pulling - coord_bonded)
-                delta_d = (np.linalg.norm(coord_bonded - coord_pulling)
-                           - max_bond_length)
+                delta_d = abs((np.linalg.norm(coord_bonded - coord_pulling)
+                               - max_bond_length))
                 f = k_bonded * delta_d**2 * direction
                 attractive_forces[ni][i] += f
+
+        # monitor attractive forces
+        scalar_attr_force = np.linalg.norm(attractive_forces, axis=2)
+        max_attr_force_index = np.argmax(scalar_attr_force, axis=1)
+        max_attr_force = np.amax(scalar_attr_force, axis=1)
+
         clash_forces = repulsive_forces + attractive_forces
         # TODO calculate energy
         energies = np.zeros(self.nimages)
-        return (clash_forces, energies)
+        return (clash_forces, energies,
+                max_rpl_force_index, max_rpl_force,
+                max_attr_force_index, max_attr_force)
 
-    def _find_bonded_neighbors(self, images, r_threshold=5, r_tol=0.2,
-                               max_bond_length=2.9):
+    def _find_bonded_neighbors(self,
+                               images: List[Structure],
+                               cart_coords,
+                               max_bond_length: float,
+                               moving_sites: List[List[PeriodicSite]] = None,
+                               r_threshold: float = 5.0,
+                               numerical_tol: float = 1e-8):
         """
         Normally, no bond information is given, so atoms connecting by virtual
         bonds to its closest neighbors will be returned.
 
         Args:
+            cart_coords ([ni,na,3]): Cartesian coords of current optimizing
+                structure.
+            moving_sites (periodic sites[ni,n]): Sites of atoms allowed to move
             r (float): radius of the search range.
-            r_tol (float): tolerance in deciding whcih atoms are the nearest
-                ones.
-
         """
+        lattice = self.structures[0].lattice
+        # TODO compute neighbors for moving_atoms only
+        # if moving_sites is None:
+        moving_coords = cart_coords.copy()
         # find neighbors and sort them on distance
+        # neighbors = List[List[List[PeriodicNeighbor]]]
         neighbors = []
         for ni in range(self.nimages):
-            temp = images[ni].get_all_neighbors(r_threshold)
+            points_neighbors = get_points_in_spheres(
+                cart_coords[ni], moving_coords[ni],
+                r=r_threshold, pbc=True,
+                numerical_tol=numerical_tol, lattice=lattice)
+            neighbors_temp = []
+            for na, neighbors_data in enumerate(points_neighbors):
+                # point_neighbors: List[PeriodicNeighbor] = []
+                point_neighbors = []
+                if len(neighbors_data) < 1:
+                    neighbors[ni].append([])
+                    warnings.warn("No neighbor atoms found for image %02d \
+                                  atom %d" % (ni, na),
+                                  UserWarning)
+                    continue
+                for n in neighbors_data:
+                    coord, d, index, image = n
+                    if (d > numerical_tol):
+                        # exclude atoms that are too close and itself
+                        neighbor = PeriodicNeighbor(
+                            species=self.structures[0][index].species,
+                            coords=coord,
+                            lattice=lattice,
+                            properties=self.structures[0][index].properties,
+                            nn_distance=d,
+                            index=index,
+                            image=tuple(image)
+                        )
+                        point_neighbors.append(neighbor)
+                point_neighbors.sort(key=attrgetter('nn_distance'))
+                neighbors_temp.append(point_neighbors)
+            neighbors.append(neighbors_temp)
+        #  for ni in range(self.nimages):
+        #     temp = images[ni].get_all_neighbors(r_threshold)
+        #     for na in range(self.natoms):
+        #         if (len(temp[na]) == 0):
+        #             raise Exception('No neighbors found in image%02d atom%d'
+        #                             % (ni, na))
+        #         temp[na].sort(key=attrgetter('distance'))
+        #     neighbors.append(temp)
 
-            for na in range(self.natoms):
-                if (len(temp[na]) == 0):
-                    raise Exception('No neighbors found in image%02d atom%d'
-                                    % (ni, na))
-                temp[na].sort(key=attrgetter('distance'))
-            neighbors.append(temp)
         # determine whcih neighbor atoms need bonding
         case = []
         for ni in range(self.nimages):
             for na in range(self.natoms):
-                min_distance = neighbors[ni][na][0].distance
+                if (len(neighbors[ni][na]) < 1):
+                    continue
+                min_distance = neighbors[ni][na][0].nn_distance
                 if (min_distance > max_bond_length):
                     # if the nearest neighbor is far enough then this atom
                     # needs bonding
                     indices = []
-                    # TODO all neighbors needs bonding or only atoms within
-                    # min_distance + r_tol?
+                    # Here all neighbors are bonded
                     for neighbor_site in neighbors[ni][na]:
                         indices.append(neighbor_site.index)
                     case.append([ni, na, indices])
