@@ -15,6 +15,7 @@ from pymatgen.core.structure import PeriodicNeighbor
 from pymatgen.core.periodic_table import get_el_sp
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.core.lattice import get_points_in_spheres
+from pymatgen.util.coord import all_distances
 
 __author__ = "Iek-Heng Chu"
 __version__ = "1.0"
@@ -215,7 +216,7 @@ class IDPPSolver:
         return (target_dists, neighbor_26)
 
     def rerun(self, **run_kwargs):
-        # update target distance from path
+        # generate target distance from path
         target_dists = []
         for ni in range(self.nimages):
             target_dists.append(self.structures[ni+1].distance_matrix)
@@ -458,11 +459,10 @@ class IDPPSolver:
 
         """
         latt = self.structures[0].lattice
+        # generate initial structures for each images
         images = path[1:-1]
-        image_dists = []
-        for ni in range(self.nimages):
-            image_dists.append(images[ni].distance_matrix)  # in cart coords
-
+        # from images generate cart_coords
+        # minimization is updated on image_coords not images
         image_coords = []
         for ni, i in itertools.product(range(self.nimages),
                                        range(self.natoms)):
@@ -481,11 +481,8 @@ class IDPPSolver:
 
         # get forces and disp_mat of first step
         forces, energies, rpl_index, rpl_f, attr_index, attr_f \
-            = self._get_clash_forces_and_energy(
-                images=images,
-                image_coords=image_coords,
-                image_dists=image_dists,
-                **kwargs)
+            = self._get_clash_forces_and_energy(image_coords=image_coords,
+                                                **kwargs)
         disp_mat = step_size * forces[:, moving_atoms, :]
 
         # monitoring
@@ -498,11 +495,8 @@ class IDPPSolver:
             # get forces and energies
             # TODO calculate energy and use it as part of iteration criteria
             forces, energies, rpl_index, rpl_f, attr_index, attr_f \
-                = self._get_clash_forces_and_energy(
-                    images=images,
-                    image_coords=image_coords,
-                    image_dists=image_dists, **kwargs)
-
+                = self._get_clash_forces_and_energy(image_coords=image_coords,
+                                                    **kwargs)
             # monitoring
             attr_force_log.append(attr_f)
             attr_index_log.append(attr_index)
@@ -591,31 +585,45 @@ class IDPPSolver:
         step_size = initial_step_size * 1/(1 + decay * iteration)
         return step_size
 
-    def _get_clash_forces_and_energy(self, images, image_dists, image_coords,
+    def _get_clash_forces_and_energy(self, image_coords,
                                      k_steric=5.0, steric_threshold=1.1,
+                                     steric_tol=1e-8,
                                      k_bonded=0.05, max_bond_length=2.9,
                                      **kwargs):
         """
         calculate forces and energies
 
         Args:
+        image_coords ([ni,na,3]): current cart coords of each images
         k_steric (float): spring constant for steric hinderance
         steric_shreshold (float): atoms with internulcear distance smaller than
             this value will be subject to repulsive force.
 
         """
+        # from cart coords get internuclear distance for each images
+        image_dists = []
+        for ni in range(self.nimages):
+            image_dists.append(
+                all_distances(image_coords[ni], image_coords[ni]))
         # find steric hindered atoms
         steric_hindered = []
         for ni in range(self.nimages):
             for i, j in itertools.combinations(range(self.natoms), 2):
                 if (image_dists[ni][i][j] < steric_threshold
-                        and image_dists[ni][i][j] > 0):
+                        and image_dists[ni][i][j] > steric_tol):
                     steric_hindered.append([ni, i, j])
+        # DEBUG
+        with open(
+                'C:\\ComputMatSci\\IDPP_test\\pymatgen\\steric_hinderance.txt',
+                'a') as f:
+            f.write('>>>\n')
+            for n in steric_hindered:
+                f.write('image: %d clash atoms: %03d %03d\n'
+                        % (n[0]+1, n[1]+1, n[2]+1))
+
         # find bonded neighbors
-        # TODO use image_coords to generate new image
-        # because image is not updated
         bonded_neighbors = self._find_bonded_neighbors(
-            images=images, cart_coords=image_coords,
+            cart_coords=image_coords,
             max_bond_length=max_bond_length, **kwargs)
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3),
@@ -661,7 +669,6 @@ class IDPPSolver:
                 max_attr_force_index, max_attr_force)
 
     def _find_bonded_neighbors(self,
-                               images: List[Structure],
                                cart_coords,
                                max_bond_length: float,
                                moving_sites: List[List[PeriodicSite]] = None,
@@ -726,7 +733,7 @@ class IDPPSolver:
         #     neighbors.append(temp)
 
         # determine whcih neighbor atoms need bonding
-        case = []
+        cases = []
         for ni in range(self.nimages):
             for na in range(self.natoms):
                 if (len(neighbors[ni][na]) < 1):
@@ -739,8 +746,19 @@ class IDPPSolver:
                     # Here all neighbors are bonded
                     for neighbor_site in neighbors[ni][na]:
                         indices.append(neighbor_site.index)
-                    case.append([ni, na, indices])
-        return case
+                    cases.append([ni, na, indices])
+        # DEBUG
+        with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt', 'a')\
+                as f:
+            f.write('>>>\n')
+            for case in cases:
+                f.write('image: %02d atom: %03d neighbors: '
+                        % (case[0]+1, case[1]+1))
+                # all output index starts at 1
+                for i in case[2]:
+                    f.write('%03d ' % (i+1))
+                f.write('\n')
+        return cases
 
 
 class MigrationPath:
