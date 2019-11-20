@@ -98,6 +98,7 @@ class IDPPSolver:
         self.target_dists = target_dists
         self.nimages = nimages
         self.natoms = natoms
+        self.radii_list = self.radii_list()
 
     def _screen(self, target_dists: np.array, coords, r=5):
         """
@@ -420,6 +421,7 @@ class IDPPSolver:
         natoms = np.shape(true_forces)[1]
 
         for ni in range(1, len(x) - 1):
+            # TODO add tolerance
             vec1 = (x[ni + 1] - x[ni]).flatten()
             vec2 = (x[ni] - x[ni - 1]).flatten()
 
@@ -471,7 +473,11 @@ class IDPPSolver:
             image_coords.append(latt.get_cartesian_coords(frac_coord_temp))
         image_coords = np.array(image_coords).reshape(
                 self.nimages, self.natoms, 3)
-
+        # calculate distance matrix for each images
+        original_distances = []
+        for ni in range(self.nimages):
+            original_distances.append(images[ni].distance_matrix)
+        # only moving_atoms are allowed to move
         if moving_atoms is None:
             moving_atoms = list(range(len(self.structures[0])))
 
@@ -481,8 +487,10 @@ class IDPPSolver:
 
         # get forces and disp_mat of first step
         forces, energies, rpl_index, rpl_f, attr_index, attr_f \
-            = self._get_clash_forces_and_energy(image_coords=image_coords,
-                                                **kwargs)
+            = self._get_clash_forces_and_energy(
+                image_coords=image_coords,
+                original_distances=original_distances,
+                **kwargs)
         disp_mat = step_size * forces[:, moving_atoms, :]
 
         # monitoring
@@ -491,12 +499,15 @@ class IDPPSolver:
         rpl_force_log = []
         rpl_index_log = []
         disp_log = []
+        progress = 0
         for n in range(max_iter):
             # get forces and energies
             # TODO calculate energy and use it as part of iteration criteria
             forces, energies, rpl_index, rpl_f, attr_index, attr_f \
-                = self._get_clash_forces_and_energy(image_coords=image_coords,
-                                                    **kwargs)
+                = self._get_clash_forces_and_energy(
+                    image_coords=image_coords,
+                    original_distances=original_distances,
+                    **kwargs)
             # monitoring
             attr_force_log.append(attr_f)
             attr_index_log.append(attr_index)
@@ -536,6 +547,11 @@ class IDPPSolver:
             scalar_disp = np.linalg.norm(disp_mat, axis=2)
             max_scalar_disp = np.amax(scalar_disp, axis=1)
             disp_log.append(max_scalar_disp)
+            # monitoring progress
+            curProgress = np.floor(n/max_iter * 10)
+            if (not curProgress == progress):
+                progress = curProgress
+                print('{:.0f}0%'.format(curProgress))
 
             # check if meets tolerance requirements
             if (max_force < gtol):
@@ -585,10 +601,11 @@ class IDPPSolver:
         step_size = initial_step_size * 1/(1 + decay * iteration)
         return step_size
 
-    def _get_clash_forces_and_energy(self, image_coords,
-                                     k_steric=5.0, steric_threshold=1.1,
+    def _get_clash_forces_and_energy(self, image_coords, original_distances,
+                                     k_steric=5.0, steric_threshold=None,
                                      steric_tol=1e-8,
-                                     k_bonded=0.05, max_bond_length=2.9,
+                                     k_bonded=0.05, max_bond_length=None,
+                                     elastic_limit=0.2,
                                      **kwargs):
         """
         calculate forces and energies
@@ -605,21 +622,23 @@ class IDPPSolver:
         for ni in range(self.nimages):
             image_dists.append(
                 all_distances(image_coords[ni], image_coords[ni]))
+
         # find steric hindered atoms
         steric_hindered = []
         for ni in range(self.nimages):
             for i, j in itertools.combinations(range(self.natoms), 2):
-                if (image_dists[ni][i][j] < steric_threshold
+                if (image_dists[ni][i][j] < self._get_steric_threshold(
+                    i, j, steric_threshold)
                         and image_dists[ni][i][j] > steric_tol):
                     steric_hindered.append([ni, i, j])
-        # DEBUG
-        with open(
-                'C:\\ComputMatSci\\IDPP_test\\pymatgen\\steric_hinderance.txt',
-                'a') as f:
-            f.write('>>>\n')
-            for n in steric_hindered:
-                f.write('image: %d clash atoms: %03d %03d\n'
-                        % (n[0]+1, n[1]+1, n[2]+1))
+        # # DEBUG
+        # with open(
+        #         'C:\\ComputMatSci\\IDPP_test\\pymatgen\\steric_hinderance.txt',
+        #         'a') as f:
+        #     f.write('>>>\n')
+        #     for n in steric_hindered:
+        #         f.write('image: %d clash atoms: %03d %03d\n'
+        #                 % (n[0]+1, n[1]+1, n[2]+1))
 
         # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
@@ -633,7 +652,15 @@ class IDPPSolver:
             coord1 = image_coords[ni][i]
             coord2 = image_coords[ni][j]
             direction = self.get_unit_vector(coord1 - coord2)
-            delta_d = abs(np.linalg.norm(coord1 - coord2) - steric_threshold)
+            r = np.linalg.norm(coord1 - coord2)
+            delta_d = abs(r
+                          - self._get_steric_threshold(i, j, steric_threshold))
+            # if (abs(r-original_distances[ni][i][j]) > elastic_limit):
+            #     f = ((k_steric * delta_d**2
+            #          + (abs(r-original_distances[ni][i][j])-elastic_limit)**2
+            #          * 1e8)
+            #          * direction)
+            # else:
             f = k_steric * delta_d**2 * direction
             repulsive_forces[ni][i] += f
             repulsive_forces[ni][j] += - f
@@ -652,7 +679,8 @@ class IDPPSolver:
                 coord_pulling = image_coords[ni][index]
                 direction = self.get_unit_vector(coord_pulling - coord_bonded)
                 delta_d = abs((np.linalg.norm(coord_bonded - coord_pulling)
-                               - max_bond_length))
+                               - self._get_max_bond_length(
+                                   i, index, max_bond_length)))
                 f = k_bonded * delta_d**2 * direction
                 attractive_forces[ni][i] += f
 
@@ -670,7 +698,7 @@ class IDPPSolver:
 
     def _find_bonded_neighbors(self,
                                cart_coords,
-                               max_bond_length: float,
+                               max_bond_length: float = None,
                                moving_sites: List[List[PeriodicSite]] = None,
                                r_threshold: float = 5.0,
                                numerical_tol: float = 1e-8):
@@ -734,12 +762,16 @@ class IDPPSolver:
 
         # determine whcih neighbor atoms need bonding
         cases = []
+
         for ni in range(self.nimages):
             for na in range(self.natoms):
                 if (len(neighbors[ni][na]) < 1):
                     continue
                 min_distance = neighbors[ni][na][0].nn_distance
-                if (min_distance > max_bond_length):
+                closest_nei_id = neighbors[ni][na][0].index
+                max_d = self._get_max_bond_length(
+                    na, closest_nei_id, max_bond_length)
+                if (min_distance > max_d):
                     # if the nearest neighbor is far enough then this atom
                     # needs bonding
                     indices = []
@@ -747,18 +779,53 @@ class IDPPSolver:
                     for neighbor_site in neighbors[ni][na]:
                         indices.append(neighbor_site.index)
                     cases.append([ni, na, indices])
-        # DEBUG
-        with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt', 'a')\
-                as f:
-            f.write('>>>\n')
-            for case in cases:
-                f.write('image: %02d atom: %03d neighbors: '
-                        % (case[0]+1, case[1]+1))
-                # all output index starts at 1
-                for i in case[2]:
-                    f.write('%03d ' % (i+1))
-                f.write('\n')
+        # # DEBUG
+        # with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt', 'a')\
+        #         as f:
+        #     f.write('>>>\n')
+        #     for case in cases:
+        #         f.write('image: %02d atom: %03d neighbors: '
+        #                 % (case[0]+1, case[1]+1))
+        #         # all output index starts at 1
+        #         for i in case[2]:
+        #             f.write('%03d ' % (i+1))
+        #         f.write('\n')
         return cases
+
+    def _get_steric_threshold(self, atom_1, atom_2, parameter):
+        if parameter is None:
+            d = self.radii_list[atom_1] + self.radii_list[atom_2]
+        else:
+            d = parameter
+        return d
+
+    def _get_max_bond_length(self, atom1, atom2, max_bond_length):
+        if max_bond_length is None:
+            d = self.radii_list[atom1] + self.radii_list[atom2] + 0.2
+        else:
+            d = max_bond_length
+        return d
+
+    def radii_list(self):
+        """
+        Build radii list of each atoms in the structure. If steric_threshold or
+        max_bond_length is not manually set, radii_list should be used to
+        automaticallty generate those parameters according to atomic radius.
+        """
+        radii = []
+        for i in range(self.natoms):
+            r = self._get_radius(i)
+            radii.append(r)
+        return radii
+
+    def _get_radius(self, atom_index):
+        structure = self.structures[0]
+        if (structure[atom_index].species.is_element):
+            r = structure[atom_index].species.elements[0].atomic_radius
+        else:
+            raise ValueError(
+                "sites in structures should be elements not compositions")
+        return r
 
 
 class MigrationPath:
