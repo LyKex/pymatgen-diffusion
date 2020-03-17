@@ -12,7 +12,7 @@ import numpy as np
 
 from pymatgen.core import Structure, PeriodicSite
 from pymatgen.core.structure import PeriodicNeighbor
-from pymatgen.core.periodic_table import get_el_sp
+from pymatgen.core.periodic_table import get_el_sp, Element
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.core.lattice import get_points_in_spheres
 from pymatgen.util.coord import all_distances
@@ -775,12 +775,13 @@ class IDPPSolver:
                     # if the nearest neighbor is far enough then this atom
                     # needs bonding
                     indices = []
-                    # Here all neighbors are bonded
+                    # all neighbors are bonded
                     for neighbor_site in neighbors[ni][na]:
                         indices.append(neighbor_site.index)
                     cases.append([ni, na, indices])
         # # DEBUG
-        # with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt', 'a')\
+        # with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt',
+        # 'a')\
         #         as f:
         #     f.write('>>>\n')
         #     for case in cases:
@@ -821,10 +822,15 @@ class IDPPSolver:
     def _get_radius(self, atom_index):
         structure = self.structures[0]
         if (structure[atom_index].species.is_element):
-            r = structure[atom_index].species.elements[0].atomic_radius
+            elmnt = structure[atom_index].species.elements[0]
+            if (elmnt == Element("Li")):
+                r = 0.83
+            else:
+                r = elmnt.atomic_radius
         else:
             raise ValueError(
                 "sites in structures should be elements not compositions")
+        print('element:{} radius:{}'.format(elmnt, r))
         return r
 
 
