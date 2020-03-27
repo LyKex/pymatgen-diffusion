@@ -823,8 +823,13 @@ class IDPPSolver:
         structure = self.structures[0]
         if (structure[atom_index].species.is_element):
             elmnt = structure[atom_index].species.elements[0]
+            # ionic radii list should be added
             if (elmnt == Element("Li")):
                 r = 0.83
+            elif (elmnt == Element("Na")):
+                r = 1.16
+            elif (elmnt == Element("K")):
+                r = 1.52
             else:
                 r = elmnt.atomic_radius
         else:
