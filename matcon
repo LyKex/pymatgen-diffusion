@@ -1,0 +1,32 @@
+#!/home/liugy/miniconda3/envs/my_pymatgen/bin/python
+
+from pymatgen.core import Structure
+import argparse
+import os.path
+
+argparse = argparse.ArgumentParser(
+    description="Crystal file format converter based on pymatgen."
+)
+argparse.add_argument("input", nargs="+", help="Specify input file(s).")
+argparse.add_argument(
+    "-f",
+    "--format",
+    nargs="?",
+    default="poscar",
+    help="Specify output format. Default: VASP POSCAR",
+)
+args = argparse.parse_args()
+
+output_format = args.format
+# print(output_format)
+for i in args.input:
+    file_name = i
+    output_name = i.split(".")[0]
+    file_path = os.path.dirname(file_name)
+    # specify merge_tol will yield scrambled atom order
+    struc = Structure.from_file(file_name)
+    struc.to(
+        fmt=output_format,
+        filename=os.path.join(file_path, "{}.{}".format(output_name, output_format)),
+        # filename=output_name,
+    )

@@ -1,0 +1,135 @@
+#!/home/liugy/miniconda3/envs/my_pymatgen/bin/python
+from pymatgen.core import Structure
+import configparser
+import argparse
+import time
+import os
+
+# import pymatgen_diffusion from path
+import sys
+import importlib.util
+
+module_name = "pathfinder"
+spec = importlib.util.spec_from_file_location(
+    module_name,
+    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion"
+    + "/pymatgen_diffusion/neb/pathfinder.py",
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = module
+spec.loader.exec_module(module)
+from pathfinder import IDPPSolver
+
+# read config
+parser = argparse.ArgumentParser(description="Generate initial guess for NEB.")
+parser.add_argument("-i", "--input", nargs=1, help="location of configuration file")
+parser.add_argument("-o", "--output", nargs=1, help="output directory")
+args = parser.parse_args()
+config = configparser.ConfigParser()
+config.read(args.input[0])
+save_dir = args.output[0]
+
+# default
+default_conf = config["Default"]
+initial_state = default_conf.get("initial-state", "CONTCAR-ini")
+final_state = default_conf.get("final-state", "CONTCAR-fin")
+nimages = default_conf.getint("images", 3)
+species = default_conf.get("NEB-species", None)
+if species:
+    species = species.split(",")
+
+# IDPP parameters
+IDPP_config = config["IDPP"]
+IDPP_iter = IDPP_config.getint("max-iteration")
+IDPP_ftol = IDPP_config.getfloat("force-tolerance", 1e-5)
+IDPP_gtol = IDPP_config.getfloat("energy-tolerance", 1e-3)
+
+# clash removal parameters
+# TODO is_ion = IDPP_config.getboolean('is-ion',False)
+CR_config = config["Clash Removal"]
+CR_iter = CR_config.getint("max-iteration")
+pi_bond = CR_config.getfloat("pi-bond", 0.0)
+optimization_method = CR_config.get(
+    "optimization", "decay"
+)  # available_method: 'decay', 'expo', 'triangular'
+CR_step_size = CR_config.getfloat("step-size", 0.05)
+bonding_K = CR_config.getfloat("bonding-K", 0.05)
+steric_K = CR_config.getfloat("steric-K", 5.0)
+max_bond_tol = CR_config.getfloat("bond-length-tolerance", 0.2)
+base_step = CR_config.getfloat("base-step-size", 0.01)
+max_step = CR_config.getfloat("max-step-size", 0.05)
+# TODO is_log = false # turn on logging
+
+# Rerun parameters
+rr_config = config["Rerun"]
+rr_iter = rr_config.getint("max-iteratoin")
+rr_ftol = rr_config.getfloat("force-tolerance", 1e-5)
+rr_gtol = rr_config.getfloat("energy-tolerance", 1e-3)
+
+ini = Structure.from_file(initial_state)
+fin = Structure.from_file(final_state)
+
+# initialize IDPPSolver
+obj = IDPPSolver.from_endpoints(
+    endpoints=[ini, fin], nimages=nimages, sort_tol=0, pi_bond=pi_bond
+)
+# find IDPP path
+if IDPP_iter:
+    idpp_path = obj.run(
+        maxiter=IDPP_iter, tol=IDPP_ftol, gtol=IDPP_gtol, species=species
+    )
+    path_for_CR = idpp_path
+else:
+    path_for_CR = obj.structures
+
+# Clash Removal
+if CR_iter:
+    start_time = time.time()
+    (
+        clash_removed_path,
+        attr_force_log,
+        attr_index_log,
+        rpl_force_log,
+        rpl_index_log,
+        disp_log,
+    ) = obj.clash_removal(
+        path_for_CR,
+        step_size=CR_step_size,
+        max_iter=CR_iter,
+        k_bonded=bonding_K,
+        k_steric=steric_K,
+        base_step=base_step,
+        max_step=max_step,
+        step_update_method=optimization_method,
+        max_bond_tol=max_bond_tol,
+    )
+    print("--- %.02d seconds ---" % (time.time() - start_time))
+
+
+# rerun
+if rr_iter:
+    obj_rerun = IDPPSolver(clash_removed_path)
+    rerun_path = obj_rerun.rerun(maxiter=rr_iter, tol=rr_ftol, gtol=rr_gtol)
+
+# output
+if rr_iter:
+    result = rerun_path
+    print("Output rerun path.\n")
+elif CR_iter:
+    result = clash_removed_path
+    print("Output Clash Removal path.\n")
+elif IDPP_iter:
+    result = idpp_path
+    print("Output IDPP path.\n")
+else:
+    result = obj.structures
+    print("Output linear interpolation path.\n")
+
+print("result path length: {}".format(len(result)))
+
+if not os.path.exists(save_dir):
+    os.mkdir(save_dir)
+for n, struct in enumerate(result):
+    struct.to(fmt="poscar", filename="{}/POSCAR_{:02d}".format(save_dir, n))
+# else:
+# raise OSError("result file path exits")
