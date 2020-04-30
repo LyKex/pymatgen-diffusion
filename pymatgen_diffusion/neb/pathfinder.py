@@ -8,6 +8,7 @@ from operator import attrgetter
 from typing import List
 
 import numpy as np
+
 # import copy
 
 from pymatgen.core import Structure, PeriodicSite
@@ -37,7 +38,7 @@ class IDPPSolver:
 
     """
 
-    def __init__(self, structures):
+    def __init__(self, structures, pi_bond=0.0):
         """
         Initialization.
 
@@ -59,11 +60,11 @@ class IDPPSolver:
         # tion between those of end-point structures.
         for i in range(1, nimages + 1):
             # Interpolated distance matrices
-            dist = (structures[0].distance_matrix
-                    + i / (nimages + 1) * (structures[-1].distance_matrix
-                    - structures[0].distance_matrix))
+            dist = structures[0].distance_matrix + i / (nimages + 1) * (
+                structures[-1].distance_matrix - structures[0].distance_matrix
+            )
             # linear interpolated distance
-            target_dists.append(dist)   # with shape in [ni,na,na]
+            target_dists.append(dist)  # with shape in [ni,na,na]
         target_dists = np.array(target_dists)
 
         # A set of weight functions. It is set as 1/d^4 for each image. Here,
@@ -71,10 +72,10 @@ class IDPPSolver:
         # distance matrix.
         weights = np.zeros_like(target_dists, dtype=np.float64)
         for ni in range(nimages):
-            avg_dist = (target_dists[ni]
-                        + structures[ni + 1].distance_matrix) / 2.0
-            weights[ni] = 1.0 / (avg_dist ** 4 +
-                                 np.eye(natoms, dtype=np.float64) * 1e-8)
+            avg_dist = (target_dists[ni] + structures[ni + 1].distance_matrix) / 2.0
+            weights[ni] = 1.0 / (
+                avg_dist ** 4 + np.eye(natoms, dtype=np.float64) * 1e-8
+            )
 
         # Set of translational vector matrices (anti-symmetric) for the images.
         translations = np.zeros((nimages, natoms, natoms, 3), dtype=np.float64)
@@ -85,20 +86,20 @@ class IDPPSolver:
             if ni not in [0, nimages + 1]:
                 for j in range(i + 1, natoms):
                     img = latt.get_distance_and_image(
-                        frac_coords, structures[ni][j].frac_coords)[1]
+                        frac_coords, structures[ni][j].frac_coords
+                    )[1]
                     translations[ni - 1, i, j] = latt.get_cartesian_coords(img)
-                    translations[ni - 1, j, i] = -latt.get_cartesian_coords(
-                        img)
+                    translations[ni - 1, j, i] = -latt.get_cartesian_coords(img)
 
-        self.init_coords = np.array(init_coords).reshape(
-            nimages + 2, natoms, 3)
+        self.init_coords = np.array(init_coords).reshape(nimages + 2, natoms, 3)
         self.translations = translations
         self.weights = weights
         self.structures = structures
         self.target_dists = target_dists
         self.nimages = nimages
         self.natoms = natoms
-        self.radii_list = self.radii_list()
+        self.radii_list = self.radii_list(pi_bond)
+        self.paramerters = {}
 
     def _screen(self, target_dists: np.array, coords, r=5):
         """
@@ -126,14 +127,16 @@ class IDPPSolver:
         radius = 1.44
         images = []
         # generate the image structures from coords
-        for ni in range(1, self.nimages+1):
+        for ni in range(1, self.nimages + 1):
             new_sites = []
-            for site, cart_coords in zip(self.structures[ni],
-                                         coords[ni]):
+            for site, cart_coords in zip(self.structures[ni], coords[ni]):
                 new_site = PeriodicSite(
-                    site.species, coords=cart_coords,
-                    lattice=site.lattice, coords_are_cartesian=True,
-                    properties=site.properties)
+                    site.species,
+                    coords=cart_coords,
+                    lattice=site.lattice,
+                    coords_are_cartesian=True,
+                    properties=site.properties,
+                )
                 new_sites.append(new_site)
             images.append(Structure.from_sites(new_sites))
         # find nearest neighbors within r angstroms
@@ -192,24 +195,26 @@ class IDPPSolver:
         #         if (isTooFar):
         #             indices_temp.append(neighbors[ni][na][nn].index)
         #             vector_tmep.append()
-            # images[ni].translate_sites(indices = indices_temp,
-            #                            vector = vector_temp)
+        # images[ni].translate_sites(indices = indices_temp,
+        #                            vector = vector_temp)
         # obtain new target_distance
         for ni in range(self.nimages):
             # for i, j in itertools.combinations(range(natoms), 2):
             for i in range(natoms):
-                for j in range(i+1, natoms):
+                for j in range(i + 1, natoms):
                     # d_ij = target_dists[ni][i][j]
                     # if (d_ij < 2 * radius and d_ij > 0):
                     #     # if too close
                     #     target_dists[ni][i][j] = 2 * radius
                     #     target_dists[ni][j][i] = 2 * radius
-                    if (dists[ni][i][j] < 2 * radius):
+                    if dists[ni][i][j] < 2 * radius:
                         # if too close
                         target_dists[ni][i][j] += 1
                         target_dists[ni][j][i] += 1
-                    if (j in neighbor_indices[ni][i]
-                            and dists[ni][i][j] > max_bond_length):
+                    if (
+                        j in neighbor_indices[ni][i]
+                        and dists[ni][i][j] > max_bond_length
+                    ):
                         # if too far
                         # this may push atoms even further
                         target_dists[ni][i][j] = max_bond_length
@@ -220,13 +225,21 @@ class IDPPSolver:
         # generate target distance from path
         target_dists = []
         for ni in range(self.nimages):
-            target_dists.append(self.structures[ni+1].distance_matrix)
+            target_dists.append(self.structures[ni + 1].distance_matrix)
         self.target_dists = target_dists
 
         return self.run(**run_kwargs)
 
-    def run(self, maxiter=1000, tol=1e-5, gtol=1e-3, step_size=0.05,
-            max_disp=0.05, spring_const=5.0, species=None):
+    def run(
+        self,
+        maxiter=1000,
+        tol=1e-5,
+        gtol=1e-3,
+        step_size=0.05,
+        max_disp=0.05,
+        spring_const=5.0,
+        species=None,
+    ):
         """
         Perform iterative minimization of the set of objective functions in an
         NEB-like manner. In each iteration, the total force matrix for each
@@ -263,8 +276,9 @@ class IDPPSolver:
             indices = list(range(len(self.structures[0])))
         else:
             species = [get_el_sp(sp) for sp in species]
-            indices = [i for i, site in enumerate(self.structures[0])
-                       if site.specie in species]
+            indices = [
+                i for i, site in enumerate(self.structures[0]) if site.specie in species
+            ]
 
             if len(indices) == 0:
                 raise ValueError("The given species are not in the system!")
@@ -283,15 +297,16 @@ class IDPPSolver:
             funcs, true_forces = self._get_funcs_and_forces(coords)
             # funcs, true_forces, neighbor_26_temp =
             #   self._get_funcs_and_forces(coords, d_3_4, d_3_9, d_3_10, d_26)
-            tot_forces = self._get_total_forces(coords, true_forces,
-                                                spring_const=spring_const)
+            tot_forces = self._get_total_forces(
+                coords, true_forces, spring_const=spring_const
+            )
             # neighbor_26.append(neighbor_26_temp)
             # Each atom is allowed to move up to max_disp
             disp_mat = step_size * tot_forces[:, indices, :]
-            disp_mat = np.where(np.abs(disp_mat) > max_disp,
-                                np.sign(disp_mat) * max_disp,
-                                disp_mat)
-            coords[1:(self.nimages + 1), indices] += disp_mat
+            disp_mat = np.where(
+                np.abs(disp_mat) > max_disp, np.sign(disp_mat) * max_disp, disp_mat
+            )
+            coords[1 : (self.nimages + 1), indices] += disp_mat
 
             max_force = np.abs(tot_forces[:, indices, :]).max()
             tot_res = np.sum(np.abs(old_funcs - funcs))
@@ -310,19 +325,21 @@ class IDPPSolver:
 
         else:
             warnings.warn(
-                "Maximum iteration number is reached without convergence!",
-                UserWarning)
+                "Maximum iteration number is reached without convergence!", UserWarning
+            )
 
         for ni in range(self.nimages):
             # generate the improved image structure
             new_sites = []
 
-            for site, cart_coords in zip(self.structures[ni + 1],
-                                         coords[ni + 1]):
+            for site, cart_coords in zip(self.structures[ni + 1], coords[ni + 1]):
                 new_site = PeriodicSite(
-                    site.species, coords=cart_coords,
-                    lattice=site.lattice, coords_are_cartesian=True,
-                    properties=site.properties)
+                    site.species,
+                    coords=cart_coords,
+                    lattice=site.lattice,
+                    coords_are_cartesian=True,
+                    properties=site.properties,
+                )
                 new_sites.append(new_site)
 
             idpp_structures.append(Structure.from_sites(new_sites))
@@ -333,7 +350,7 @@ class IDPPSolver:
         # return (idpp_structures, d_3_4, d_3_9, d_3_10, d_26, neighbor_26)
 
     @classmethod
-    def from_endpoints(cls, endpoints, nimages=5, sort_tol=1.0):
+    def from_endpoints(cls, endpoints, nimages=5, sort_tol=1.0, pi_bond=0):
         """
         A class method that starts with end-point structures instead. The
         initial guess for the IDPP algo is then constructed using linear
@@ -344,24 +361,29 @@ class IDPPSolver:
                 structures.
             nimages (int): Number of images between the two end-points.
             sort_tol (float): Distance tolerance (in Angstrom) used to match
-            the atomic indices between start and end structures. Need to
-            increase the value in some cases.
+                the atomic indices between start and end structures. Need to
+                increase the value in some cases.
+            pi_bond (float): pi_bond thickness in angstrom. When used will
+                add this value to all the elements other than carbon.
         """
         try:
             images = endpoints[0].interpolate(
-                endpoints[1], nimages=nimages + 1, autosort_tol=sort_tol)
+                endpoints[1], nimages=nimages + 1, autosort_tol=sort_tol
+            )
         except Exception as e:
             if "Unable to reliably match structures " in str(e):
-                warnings.warn("Auto sorting is turned off because it is unable"
-                              " to match the end-point structures!",
-                              UserWarning)
-                images = endpoints[0].interpolate(endpoints[1],
-                                                  nimages=nimages + 1,
-                                                  autosort_tol=0)
+                warnings.warn(
+                    "Auto sorting is turned off because it is unable"
+                    " to match the end-point structures!",
+                    UserWarning,
+                )
+                images = endpoints[0].interpolate(
+                    endpoints[1], nimages=nimages + 1, autosort_tol=0
+                )
             else:
                 raise e
 
-        return IDPPSolver(images)
+        return IDPPSolver(images, pi_bond)
 
     def _get_funcs_and_forces(self, x):
         """
@@ -388,11 +410,13 @@ class IDPPSolver:
         #     probe4.append(target_dists[ni][25])
 
         for ni in range(len(x) - 2):
-            vec = [x[ni + 1, i] - x[ni + 1] - trans[ni, i]
-                   for i in range(natoms)]
+            vec = [x[ni + 1, i] - x[ni + 1] - trans[ni, i] for i in range(natoms)]
             trial_dist = np.linalg.norm(vec, axis=2)
-            aux = ((trial_dist - target_dists[ni]) * weights[ni]
-                   / (trial_dist + np.eye(natoms, dtype=np.float64)))
+            aux = (
+                (trial_dist - target_dists[ni])
+                * weights[ni]
+                / (trial_dist + np.eye(natoms, dtype=np.float64))
+            )
 
             # Objective function
             func = np.sum((trial_dist - target_dists[ni]) ** 2 * weights[ni])
@@ -430,26 +454,34 @@ class IDPPSolver:
             tangent = self.get_unit_vector(tangent)
 
             # Spring force
-            spring_force = spring_const * (np.linalg.norm(vec1) -
-                                           np.linalg.norm(vec2)) * tangent
+            spring_force = (
+                spring_const * (np.linalg.norm(vec1) - np.linalg.norm(vec2)) * tangent
+            )
 
             # Total force
             flat_ft = true_forces[ni - 1].copy().flatten()
             total_force = true_forces[ni - 1] + (
-                    spring_force - np.dot(flat_ft, tangent) * tangent).reshape(
-                natoms, 3)
+                spring_force - np.dot(flat_ft, tangent) * tangent
+            ).reshape(natoms, 3)
             total_forces.append(total_force)
 
         return np.array(total_forces)
 
-    def clash_removal(self, path, moving_atoms=None,
-                      step_size=0.05, max_disp=0.1,
-                      max_iter=200, gtol=1e-3,
-                      step_update_method='decay',
-                      base_step=0.01, max_step=0.05,
-                      **kwargs):
+    def clash_removal(
+        self,
+        path,
+        moving_atoms=None,
+        step_size=0.05,
+        max_disp=0.1,
+        max_iter=200,
+        gtol=1e-3,
+        step_update_method="decay",
+        base_step=0.01,
+        max_step=0.05,
+        **kwargs
+    ):
         """
-        Conduct steric clash removal based on IDPP path.
+        Conduct steric clash removal based on given path.
 
         path (list of Structure): idpp path generated. The first and last
             structures coorepond to the initial and final structures.
@@ -466,13 +498,11 @@ class IDPPSolver:
         # from images generate cart_coords
         # minimization is updated on image_coords not images
         image_coords = []
-        for ni, i in itertools.product(range(self.nimages),
-                                       range(self.natoms)):
+        for ni, i in itertools.product(range(self.nimages), range(self.natoms)):
             # no getter for cart_coords attribute, so has to do this
             frac_coord_temp = images[ni][i].frac_coords
             image_coords.append(latt.get_cartesian_coords(frac_coord_temp))
-        image_coords = np.array(image_coords).reshape(
-                self.nimages, self.natoms, 3)
+        image_coords = np.array(image_coords).reshape(self.nimages, self.natoms, 3)
         # calculate distance matrix for each images
         original_distances = []
         for ni in range(self.nimages):
@@ -482,15 +512,20 @@ class IDPPSolver:
             moving_atoms = list(range(len(self.structures[0])))
 
         # prepare for step_size update
-        max_force = float('inf')
+        max_force = float("inf")
         initial_step_size = step_size
 
         # get forces and disp_mat of first step
-        forces, energies, rpl_index, rpl_f, attr_index, attr_f \
-            = self._get_clash_forces_and_energy(
-                image_coords=image_coords,
-                original_distances=original_distances,
-                **kwargs)
+        (
+            forces,
+            energies,
+            rpl_index,
+            rpl_f,
+            attr_index,
+            attr_f,
+        ) = self._get_clash_forces_and_energy(
+            image_coords=image_coords, original_distances=original_distances, **kwargs
+        )
         disp_mat = step_size * forces[:, moving_atoms, :]
 
         # monitoring
@@ -503,11 +538,18 @@ class IDPPSolver:
         for n in range(max_iter):
             # get forces and energies
             # TODO calculate energy and use it as part of iteration criteria
-            forces, energies, rpl_index, rpl_f, attr_index, attr_f \
-                = self._get_clash_forces_and_energy(
-                    image_coords=image_coords,
-                    original_distances=original_distances,
-                    **kwargs)
+            (
+                forces,
+                energies,
+                rpl_index,
+                rpl_f,
+                attr_index,
+                attr_f,
+            ) = self._get_clash_forces_and_energy(
+                image_coords=image_coords,
+                original_distances=original_distances,
+                **kwargs
+            )
             # monitoring
             attr_force_log.append(attr_f)
             attr_index_log.append(attr_index)
@@ -518,28 +560,29 @@ class IDPPSolver:
             prev_max_force = max_force
             max_force = np.abs(forces).max()
 
-            if (step_update_method == 'decay'):
+            if step_update_method == "decay":
                 decay = 0.01
-                if (max_force < prev_max_force):
-                    step_size = initial_step_size * 1/(1 + decay * n)
-            if (step_update_method == 'expo'):
-                if (max_force > prev_max_force):
+                if max_force < prev_max_force:
+                    step_size = initial_step_size * 1 / (1 + decay * n)
+            if step_update_method == "expo":
+                if max_force > prev_max_force:
                     step_size = step_size * 0.5
                     # reject last step
                     image_coords -= disp_mat
                     continue
-                if (max_force < prev_max_force):
+                if max_force < prev_max_force:
                     step_size = step_size * 1.2
-            if (step_update_method == 'triangular'):
-                if (max_force < prev_max_force):
+            if step_update_method == "triangular":
+                if max_force < prev_max_force:
                     step_size = self._get_triangular_step(
-                        iteration=n, base_step=base_step, max_step=max_step)
+                        iteration=n, base_step=base_step, max_step=max_step
+                    )
 
             # update coords
             disp_mat = step_size * forces[:, moving_atoms, :]
-            disp_mat = np.where(np.abs(disp_mat) > max_disp,
-                                np.sign(disp_mat) * max_disp,
-                                disp_mat)
+            disp_mat = np.where(
+                np.abs(disp_mat) > max_disp, np.sign(disp_mat) * max_disp, disp_mat
+            )
             image_coords[:, moving_atoms] += disp_mat
 
             # monitoring
@@ -548,65 +591,78 @@ class IDPPSolver:
             max_scalar_disp = np.amax(scalar_disp, axis=1)
             disp_log.append(max_scalar_disp)
             # monitoring progress
-            curProgress = np.floor(n/max_iter * 10)
-            if (not curProgress == progress):
+            curProgress = np.floor(n / max_iter * 10)
+            if not curProgress == progress:
                 progress = curProgress
-                print('{:.0f}0%'.format(curProgress))
+                print("{:.0f}0%".format(curProgress))
 
             # check if meets tolerance requirements
-            if (max_force < gtol):
+            if max_force < gtol:
                 print("max_force < gtol")
                 break
         else:
             warnings.warn(
-                "Maximum iteration number is reached without convergence!",
-                UserWarning)
+                "Maximum iteration number is reached without convergence!", UserWarning
+            )
 
         # generate the improved image structure
         clash_removed_path = [self.structures[0]]
         for ni in range(self.nimages):
             new_sites = []
-            for site, cart_coords in zip(self.structures[ni + 1],
-                                         image_coords[ni]):
+            for site, cart_coords in zip(self.structures[ni + 1], image_coords[ni]):
                 new_site = PeriodicSite(
-                    site.species, coords=cart_coords,
-                    lattice=site.lattice, coords_are_cartesian=True,
-                    properties=site.properties)
+                    site.species,
+                    coords=cart_coords,
+                    lattice=site.lattice,
+                    coords_are_cartesian=True,
+                    properties=site.properties,
+                )
                 new_sites.append(new_site)
 
             clash_removed_path.append(Structure.from_sites(new_sites))
 
         # Also include end-point structure.
         clash_removed_path.append(self.structures[-1])
-        return (clash_removed_path,
-                attr_force_log, attr_index_log,
-                rpl_force_log, rpl_index_log,
-                disp_log)
+        return (
+            clash_removed_path,
+            attr_force_log,
+            attr_index_log,
+            rpl_force_log,
+            rpl_index_log,
+            disp_log,
+        )
 
     @staticmethod
-    def _get_triangular_step(iteration: int, half_period=5,
-                             base_step=0.05, max_step=0.1):
+    def _get_triangular_step(
+        iteration: int, half_period=5, base_step=0.05, max_step=0.1
+    ):
         """
         Given the inputs, calculates the step_size that should be applicable
         for this iteration using CLR technique from Anand Saha
         (http://teleported.in/posts/cyclic-learning-rate/).
         """
-        cycle = np.floor(1 + iteration/(2 * half_period))
-        x = np.abs(iteration/half_period - 2 * cycle + 1)
-        step = base_step + (max_step - base_step) * np.maximum(0, (1-x))
+        cycle = np.floor(1 + iteration / (2 * half_period))
+        x = np.abs(iteration / half_period - 2 * cycle + 1)
+        step = base_step + (max_step - base_step) * np.maximum(0, (1 - x))
         return step
 
     @staticmethod
     def _decay(iteration: int, initial_step_size, decay):
-        step_size = initial_step_size * 1/(1 + decay * iteration)
+        step_size = initial_step_size * 1 / (1 + decay * iteration)
         return step_size
 
-    def _get_clash_forces_and_energy(self, image_coords, original_distances,
-                                     k_steric=5.0, steric_threshold=None,
-                                     steric_tol=1e-8,
-                                     k_bonded=0.05, max_bond_length=None,
-                                     elastic_limit=0.2,
-                                     **kwargs):
+    def _get_clash_forces_and_energy(
+        self,
+        image_coords,
+        original_distances,
+        k_steric=5.0,
+        steric_threshold=None,
+        steric_tol=1e-8,
+        k_bonded=0.05,
+        max_bond_length=None,
+        elastic_limit=0.2,
+        **kwargs
+    ):
         """
         calculate forces and energies
 
@@ -620,16 +676,17 @@ class IDPPSolver:
         # from cart coords get internuclear distance for each images
         image_dists = []
         for ni in range(self.nimages):
-            image_dists.append(
-                all_distances(image_coords[ni], image_coords[ni]))
+            image_dists.append(all_distances(image_coords[ni], image_coords[ni]))
 
         # find steric hindered atoms
         steric_hindered = []
         for ni in range(self.nimages):
             for i, j in itertools.combinations(range(self.natoms), 2):
-                if (image_dists[ni][i][j] < self._get_steric_threshold(
-                    i, j, steric_threshold)
-                        and image_dists[ni][i][j] > steric_tol):
+                if (
+                    image_dists[ni][i][j]
+                    < self._get_steric_threshold(i, j, steric_threshold)
+                    and image_dists[ni][i][j] > steric_tol
+                ):
                     steric_hindered.append([ni, i, j])
         # # DEBUG
         # with open(
@@ -642,46 +699,46 @@ class IDPPSolver:
 
         # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
-            cart_coords=image_coords,
-            max_bond_length=max_bond_length, **kwargs)
+            cart_coords=image_coords, max_bond_length=max_bond_length, **kwargs
+        )
         # calculate repulsive forces
-        repulsive_forces = np.zeros((self.nimages, self.natoms, 3),
-                                    dtype=np.float64)
+        repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in steric_hindered:
             ni, i, j = case[0], case[1], case[2]
             coord1 = image_coords[ni][i]
             coord2 = image_coords[ni][j]
             direction = self.get_unit_vector(coord1 - coord2)
             r = np.linalg.norm(coord1 - coord2)
-            delta_d = abs(r
-                          - self._get_steric_threshold(i, j, steric_threshold))
+            delta_d = abs(r - self._get_steric_threshold(i, j, steric_threshold))
             # if (abs(r-original_distances[ni][i][j]) > elastic_limit):
             #     f = ((k_steric * delta_d**2
             #          + (abs(r-original_distances[ni][i][j])-elastic_limit)**2
             #          * 1e8)
             #          * direction)
             # else:
-            f = k_steric * delta_d**2 * direction
+            f = k_steric * delta_d ** 2 * direction
             repulsive_forces[ni][i] += f
-            repulsive_forces[ni][j] += - f
+            repulsive_forces[ni][j] += -f
         # monitor repulsive forces
         scalar_rpl_force = np.linalg.norm(repulsive_forces, axis=2)
         max_rpl_force_index = np.argmax(scalar_rpl_force, axis=1)
         max_rpl_force = np.amax(scalar_rpl_force, axis=1)
 
         # calculate attractive forces
-        attractive_forces = np.zeros((self.nimages, self.natoms, 3),
-                                     dtype=np.float64)
+        attractive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in bonded_neighbors:
             ni, i, indices = case[0], case[1], case[2]
             coord_bonded = image_coords[ni][i]
             for index in indices:
                 coord_pulling = image_coords[ni][index]
                 direction = self.get_unit_vector(coord_pulling - coord_bonded)
-                delta_d = abs((np.linalg.norm(coord_bonded - coord_pulling)
-                               - self._get_max_bond_length(
-                                   i, index, max_bond_length)))
-                f = k_bonded * delta_d**2 * direction
+                delta_d = abs(
+                    (
+                        np.linalg.norm(coord_bonded - coord_pulling)
+                        - self._get_max_bond_length(i, index, max_bond_length, **kwargs)
+                    )
+                )
+                f = k_bonded * delta_d ** 2 * direction
                 attractive_forces[ni][i] += f
 
         # monitor attractive forces
@@ -692,19 +749,29 @@ class IDPPSolver:
         clash_forces = repulsive_forces + attractive_forces
         # TODO calculate energy
         energies = np.zeros(self.nimages)
-        return (clash_forces, energies,
-                max_rpl_force_index, max_rpl_force,
-                max_attr_force_index, max_attr_force)
+        return (
+            clash_forces,
+            energies,
+            max_rpl_force_index,
+            max_rpl_force,
+            max_attr_force_index,
+            max_attr_force,
+        )
 
-    def _find_bonded_neighbors(self,
-                               cart_coords,
-                               max_bond_length: float = None,
-                               moving_sites: List[List[PeriodicSite]] = None,
-                               r_threshold: float = 5.0,
-                               numerical_tol: float = 1e-8):
+    def _find_bonded_neighbors(
+        self,
+        cart_coords,
+        max_bond_length: float = None,
+        moving_sites: List[List[PeriodicSite]] = None,
+        r_threshold: float = 5.0,
+        numerical_tol: float = 1e-8,
+        **kwargs
+    ):
         """
-        Normally, no bond information is given, so atoms connecting by virtual
-        bonds to its closest neighbors will be returned.
+        Alls atoms are assumed to be connected. Any atom with a distance to its cloest
+        neighbor larger than max_bond_length will be subjected to bonding force. The
+        force is applied by all the neighbors within a spheric range whose raduis is
+        r_threshold.
 
         Args:
             cart_coords ([ni,na,3]): Cartesian coords of current optimizing
@@ -721,22 +788,29 @@ class IDPPSolver:
         neighbors = []
         for ni in range(self.nimages):
             points_neighbors = get_points_in_spheres(
-                cart_coords[ni], moving_coords[ni],
-                r=r_threshold, pbc=True,
-                numerical_tol=numerical_tol, lattice=lattice)
+                cart_coords[ni],
+                moving_coords[ni],
+                r=r_threshold,
+                pbc=True,
+                numerical_tol=numerical_tol,
+                lattice=lattice,
+            )
             neighbors_temp = []
             for na, neighbors_data in enumerate(points_neighbors):
                 # point_neighbors: List[PeriodicNeighbor] = []
                 point_neighbors = []
                 if len(neighbors_data) < 1:
                     neighbors[ni].append([])
-                    warnings.warn("No neighbor atoms found for image %02d \
-                                  atom %d" % (ni, na),
-                                  UserWarning)
+                    warnings.warn(
+                        "No neighbor atoms found for image %02d \
+                                  atom %d"
+                        % (ni, na),
+                        UserWarning,
+                    )
                     continue
                 for n in neighbors_data:
                     coord, d, index, image = n
-                    if (d > numerical_tol):
+                    if d > numerical_tol:
                         # exclude atoms that are too close and itself
                         neighbor = PeriodicNeighbor(
                             species=self.structures[0][index].species,
@@ -745,10 +819,10 @@ class IDPPSolver:
                             properties=self.structures[0][index].properties,
                             nn_distance=d,
                             index=index,
-                            image=tuple(image)
+                            image=tuple(image),
                         )
                         point_neighbors.append(neighbor)
-                point_neighbors.sort(key=attrgetter('nn_distance'))
+                point_neighbors.sort(key=attrgetter("nn_distance"))
                 neighbors_temp.append(point_neighbors)
             neighbors.append(neighbors_temp)
         #  for ni in range(self.nimages):
@@ -765,13 +839,14 @@ class IDPPSolver:
 
         for ni in range(self.nimages):
             for na in range(self.natoms):
-                if (len(neighbors[ni][na]) < 1):
+                if len(neighbors[ni][na]) < 1:
                     continue
                 min_distance = neighbors[ni][na][0].nn_distance
                 closest_nei_id = neighbors[ni][na][0].index
                 max_d = self._get_max_bond_length(
-                    na, closest_nei_id, max_bond_length)
-                if (min_distance > max_d):
+                    na, closest_nei_id, max_bond_length, **kwargs
+                )
+                if min_distance > max_d:
                     # if the nearest neighbor is far enough then this atom
                     # needs bonding
                     indices = []
@@ -800,14 +875,14 @@ class IDPPSolver:
             d = parameter
         return d
 
-    def _get_max_bond_length(self, atom1, atom2, max_bond_length):
+    def _get_max_bond_length(self, atom1, atom2, max_bond_length, max_bond_tol=0.2):
         if max_bond_length is None:
-            d = self.radii_list[atom1] + self.radii_list[atom2] + 0.2
+            d = self.radii_list[atom1] + self.radii_list[atom2] + max_bond_tol
         else:
             d = max_bond_length
         return d
 
-    def radii_list(self):
+    def radii_list(self, pi_bond=0.0):
         """
         Build radii list of each atoms in the structure. If steric_threshold or
         max_bond_length is not manually set, radii_list should be used to
@@ -815,27 +890,29 @@ class IDPPSolver:
         """
         radii = []
         for i in range(self.natoms):
-            r = self._get_radius(i)
+            r = self._get_radius(i, pi_bond)
             radii.append(r)
         return radii
 
-    def _get_radius(self, atom_index):
+    def _get_radius(self, atom_index, pi_bond):
         structure = self.structures[0]
-        if (structure[atom_index].species.is_element):
+        if structure[atom_index].species.is_element:
             elmnt = structure[atom_index].species.elements[0]
-            # ionic radii list should be added
-            if (elmnt == Element("Li")):
-                r = 0.83
-            elif (elmnt == Element("Na")):
-                r = 1.16
-            elif (elmnt == Element("K")):
-                r = 1.52
-            else:
+            # TODO ionic radii list should be added
+            if elmnt == Element("Li"):
+                r = 0.90 + pi_bond
+                # r = 1.34 + pi_bond
+            elif elmnt == Element("Na"):
+                r = 1.16 + pi_bond
+            elif elmnt == Element("K"):
+                r = 1.52 + pi_bond
+            elif elmnt == Element("C"):
                 r = elmnt.atomic_radius
+            else:
+                r = elmnt.atomic_radius + pi_bond
         else:
-            raise ValueError(
-                "sites in structures should be elements not compositions")
-        print('element:{} radius:{}'.format(elmnt, r))
+            raise ValueError("sites in structures should be elements not compositions")
+        print("element:{} radius:{}".format(elmnt, r))
         return r
 
 
@@ -855,8 +932,8 @@ class MigrationPath:
         self.esite = esite
         self.symm_structure = symm_structure
         self.msite = PeriodicSite(
-            esite.specie,
-            (isite.frac_coords + esite.frac_coords) / 2, esite.lattice)
+            esite.specie, (isite.frac_coords + esite.frac_coords) / 2, esite.lattice
+        )
         sg = self.symm_structure.spacegroup
         for i, sites in enumerate(self.symm_structure.equivalent_sites):
             if sg.are_symmetrically_equivalent([isite], [sites[0]]):
@@ -865,17 +942,26 @@ class MigrationPath:
                 self.eindex = i
 
     def __repr__(self):
-        return "Path of %.4f A from %s [%.3f, %.3f, %.3f] " \
-               "(ind: %d, Wyckoff: %s) to %s [%.3f, %.3f, %.3f] " \
-               "(ind: %d, Wyckoff: %s)" \
-               % (self.length, self.isite.specie, self.isite.frac_coords[0],
-                  self.isite.frac_coords[1], self.isite.frac_coords[2],
-                  self.iindex,
-                  self.symm_structure.wyckoff_symbols[self.iindex],
-                  self.esite.specie, self.esite.frac_coords[0],
-                  self.esite.frac_coords[1], self.esite.frac_coords[2],
-                  self.eindex,
-                  self.symm_structure.wyckoff_symbols[self.eindex])
+        return (
+            "Path of %.4f A from %s [%.3f, %.3f, %.3f] "
+            "(ind: %d, Wyckoff: %s) to %s [%.3f, %.3f, %.3f] "
+            "(ind: %d, Wyckoff: %s)"
+            % (
+                self.length,
+                self.isite.specie,
+                self.isite.frac_coords[0],
+                self.isite.frac_coords[1],
+                self.isite.frac_coords[2],
+                self.iindex,
+                self.symm_structure.wyckoff_symbols[self.iindex],
+                self.esite.specie,
+                self.esite.frac_coords[0],
+                self.esite.frac_coords[1],
+                self.esite.frac_coords[2],
+                self.eindex,
+                self.symm_structure.wyckoff_symbols[self.eindex],
+            )
+        )
 
     @property
     def length(self):
@@ -897,11 +983,10 @@ class MigrationPath:
 
         return self.symm_structure.spacegroup.are_symmetrically_equivalent(
             (self.isite, self.msite, self.esite),
-            (other.isite, other.msite, other.esite)
+            (other.isite, other.msite, other.esite),
         )
 
-    def get_structures(self, nimages=5, vac_mode=True, idpp=False,
-                       **idpp_kwargs):
+    def get_structures(self, nimages=5, vac_mode=True, idpp=False, **idpp_kwargs):
         """
         Generate structures for NEB calculation.
 
@@ -938,18 +1023,21 @@ class MigrationPath:
             if site.specie != isite.specie:
                 other_sites.append(site)
             else:
-                if vac_mode and (isite.distance(site) > 1e-8 and
-                                 esite.distance(site) > 1e-8):
+                if vac_mode and (
+                    isite.distance(site) > 1e-8 and esite.distance(site) > 1e-8
+                ):
                     migrating_specie_sites.append(site)
 
         start_structure = Structure.from_sites(
-            [self.isite] + migrating_specie_sites + other_sites)
+            [self.isite] + migrating_specie_sites + other_sites
+        )
         end_structure = Structure.from_sites(
-            [self.esite] + migrating_specie_sites + other_sites)
+            [self.esite] + migrating_specie_sites + other_sites
+        )
 
-        structures = start_structure.interpolate(end_structure,
-                                                 nimages=nimages + 1,
-                                                 pbc=False)
+        structures = start_structure.interpolate(
+            end_structure, nimages=nimages + 1, pbc=False
+        )
 
         if idpp:
             solver = IDPPSolver(structures)
@@ -980,8 +1068,14 @@ class DistinctPathFinder:
     for atomic mechanism, and does not work for correlated migration.
     """
 
-    def __init__(self, structure, migrating_specie, max_path_length=None,
-                 symprec=0.1, perc_mode=">1d"):
+    def __init__(
+        self,
+        structure,
+        migrating_specie,
+        max_path_length=None,
+        symprec=0.1,
+        perc_mode=">1d",
+    ):
         """
         Args:
             structure: Input structure that contains all sites.
@@ -1011,8 +1105,7 @@ class DistinctPathFinder:
             if sites[0].specie == self.migrating_specie:
                 site0 = sites[0]
                 dists = []
-                neighbors = self.symm_structure.get_neighbors(
-                    site0, r=max_r)
+                neighbors = self.symm_structure.get_neighbors(site0, r=max_r)
                 for nn in sorted(neighbors, key=lambda nn: nn.distance):
                     if nn.site.specie == self.migrating_specie:
                         dists.append(nn.distance)
@@ -1053,10 +1146,10 @@ class DistinctPathFinder:
             if sites[0].specie == self.migrating_specie:
                 site0 = sites[0]
                 for nn in self.symm_structure.get_neighbors(
-                        site0, r=round(self.max_path_length, 3) + 0.01):
+                    site0, r=round(self.max_path_length, 3) + 0.01
+                ):
                     if nn.site.specie == self.migrating_specie:
-                        path = MigrationPath(site0, nn.site,
-                                             self.symm_structure)
+                        path = MigrationPath(site0, nn.site, self.symm_structure)
                         paths.add(path)
 
         return sorted(paths, key=lambda p: p.length)
@@ -1075,7 +1168,8 @@ class DistinctPathFinder:
         sites = []
         for p in self.get_paths():
             structures = p.get_structures(
-                nimages=nimages, species=[self.migrating_specie], **kwargs)
+                nimages=nimages, species=[self.migrating_specie], **kwargs
+            )
             sites.append(structures[0][0])
             sites.append(structures[-1][0])
             for s in structures[1:-1]:
