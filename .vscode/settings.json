@@ -1,0 +1,20 @@
+{
+    "python.pythonPath": "C:\\Apps\\miniconda3\\envs\\my_pymatgen\\python.exe",
+    "files.exclude": {
+        "**/.classpath": true,
+        "**/.project": true,
+        "**/.settings": true,
+        "**/.factorypath": true
+    },
+    "python.linting.enabled": true,
+    "python.linting.flake8Enabled": true,
+    "rewrap.wrappingColumn": 88,
+    "python.linting.pylintEnabled": false,
+    // "terminal.integrated.shell.windows": "",
+    "python.formatting.provider": "black",
+    "python.formatting.blackArgs": [
+        "--line-length",
+        "88"
+    ],
+    "editor.formatOnSave": true
+}
