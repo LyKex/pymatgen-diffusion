@@ -1,5 +1,5 @@
 {
-    "python.pythonPath": "C:\\Apps\\miniconda3\\envs\\my_pymatgen\\python.exe",
+    "python.pythonPath": "/home/liugy/miniconda3/envs/my_pymatgen/bin/python",
     "files.exclude": {
         "**/.classpath": true,
         "**/.project": true,
