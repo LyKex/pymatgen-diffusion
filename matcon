@@ -5,7 +5,8 @@ import argparse
 import os.path
 
 argparse = argparse.ArgumentParser(
-    description="Crystal file format converter based on pymatgen."
+    description="Crystal file format converter based on pymatgen.\nSupported formats: "
+    + "POSCAR, cif, xyz, cssr, json, xsf, yaml, prismatic."
 )
 argparse.add_argument("input", nargs="+", help="Specify input file(s).")
 argparse.add_argument(
@@ -17,7 +18,9 @@ argparse.add_argument(
 )
 args = argparse.parse_args()
 
-output_format = args.format
+output_format = args.format.lower()
+if output_format == "xyz":
+    from pymatgen.io.xyz import XYZ
 # print(output_format)
 for i in args.input:
     file_name = i
@@ -25,8 +28,10 @@ for i in args.input:
     file_path = os.path.dirname(file_name)
     # specify merge_tol will yield scrambled atom order
     struc = Structure.from_file(file_name)
-    struc.to(
-        fmt=output_format,
-        filename=os.path.join(file_path, "{}.{}".format(output_name, output_format)),
-        # filename=output_name,
-    )
+    output_path = os.path.join(file_path, "{}.{}".format(output_name, output_format))
+    if output_format == "xyz":
+        XYZ(struc).write_file(output_path)
+    else:
+        struc.to(
+            fmt=output_format, filename=output_path,
+        )
