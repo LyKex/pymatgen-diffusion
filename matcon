@@ -23,12 +23,12 @@ if output_format == "xyz":
     from pymatgen.io.xyz import XYZ
 # print(output_format)
 for i in args.input:
-    file_name = i
-    output_name = i.split(".")[0]
-    file_path = os.path.dirname(file_name)
+    file_dir = os.path.dirname(i)
+    file_name = i.split("/")[-1]
+    output_name = file_name.split(".")[0]
     # specify merge_tol will yield scrambled atom order
-    struc = Structure.from_file(file_name)
-    output_path = os.path.join(file_path, "{}.{}".format(output_name, output_format))
+    struc = Structure.from_file(i)
+    output_path = os.path.join(file_dir, "{}.{}".format(output_name, output_format))
     if output_format == "xyz":
         XYZ(struc).write_file(output_path)
     else:

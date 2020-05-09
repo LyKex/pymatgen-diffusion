@@ -58,13 +58,15 @@ steric_K = CR_config.getfloat("steric-K", 5.0)
 max_bond_tol = CR_config.getfloat("bond-length-tolerance", 0.2)
 base_step = CR_config.getfloat("base-step-size", 0.01)
 max_step = CR_config.getfloat("max-step-size", 0.05)
+r_threshold = CR_config.getfloat("neighbor-radius", 5.0)
+is_CR_NEB = CR_config.getboolean("use-NEB", False)
 # TODO is_log = false # turn on logging
 
 # Rerun parameters
 rr_config = config["Rerun"]
-rr_iter = rr_config.getint("max-iteratoin")
-rr_ftol = rr_config.getfloat("force-tolerance", 1e-5)
-rr_gtol = rr_config.getfloat("energy-tolerance", 1e-3)
+rr_iter = rr_config.getint("max-iteration")
+rr_ftol = rr_config.getfloat("energy-tolerance", 1e-5)
+rr_gtol = rr_config.getfloat("force-tolerance", 1e-3)
 
 ini = Structure.from_file(initial_state)
 fin = Structure.from_file(final_state)
@@ -83,15 +85,15 @@ else:
     path_for_CR = obj.structures
 
 # Clash Removal
-if CR_iter:
+if CR_iter and not is_CR_NEB:
     start_time = time.time()
     (
         clash_removed_path,
-        attr_force_log,
-        attr_index_log,
-        rpl_force_log,
-        rpl_index_log,
-        disp_log,
+        # attr_force_log,
+        # attr_index_log,
+        # rpl_force_log,
+        # rpl_index_log,
+        # disp_log,
     ) = obj.clash_removal(
         path_for_CR,
         step_size=CR_step_size,
@@ -102,12 +104,27 @@ if CR_iter:
         max_step=max_step,
         step_update_method=optimization_method,
         max_bond_tol=max_bond_tol,
+        r_threshold=r_threshold,
     )
     print("--- %.02d seconds ---" % (time.time() - start_time))
 
-
+# Clash Removal NEB
+if CR_iter and is_CR_NEB:
+    print("clash removal with NEB")
+    clash_removed_path = obj.clash_removal_NEB(
+        path=path_for_CR,
+        maxiter=CR_iter,
+        step_size=CR_step_size,
+        k_bonded=bonding_K,
+        k_steric=steric_K,
+        base_step=base_step,
+        max_step=max_step,
+        max_bond_tol=max_bond_tol,
+        r_threshold=r_threshold,
+    )
 # rerun
 if rr_iter:
+    print("rerun with clash removal path")
     obj_rerun = IDPPSolver(clash_removed_path)
     rerun_path = obj_rerun.rerun(maxiter=rr_iter, tol=rr_ftol, gtol=rr_gtol)
 
@@ -125,7 +142,7 @@ else:
     result = obj.structures
     print("Output linear interpolation path.\n")
 
-print("result path length: {}".format(len(result)))
+print("result path length: {}\n".format(len(result)))
 
 if not os.path.exists(save_dir):
     os.mkdir(save_dir)

@@ -98,7 +98,7 @@ class IDPPSolver:
         self.target_dists = target_dists
         self.nimages = nimages
         self.natoms = natoms
-        self.radii_list = self.radii_list(pi_bond)
+        self.radii_list = self._build_radii_list(pi_bond)
         self.paramerters = {}
 
     def _screen(self, target_dists: np.array, coords, r=5):
@@ -295,12 +295,9 @@ class IDPPSolver:
             # Get the sets of objective functions, true and total force
             # matrices.
             funcs, true_forces = self._get_funcs_and_forces(coords)
-            # funcs, true_forces, neighbor_26_temp =
-            #   self._get_funcs_and_forces(coords, d_3_4, d_3_9, d_3_10, d_26)
             tot_forces = self._get_total_forces(
                 coords, true_forces, spring_const=spring_const
             )
-            # neighbor_26.append(neighbor_26_temp)
             # Each atom is allowed to move up to max_disp
             disp_mat = step_size * tot_forces[:, indices, :]
             disp_mat = np.where(
@@ -392,7 +389,7 @@ class IDPPSolver:
 
         x: coordinates of each images
 
-        return: funcs, true_forces
+        return: funcs, true_forces [ni][nn]
         """
         funcs = []
         funcs_prime = []
@@ -439,6 +436,8 @@ class IDPPSolver:
         the spring force along the tangent + true force perpendicular to the
         tangent. Note that the spring force is the modified version in the
         literature (e.g. Henkelman et al., J. Chem. Phys. 113, 9901 (2000)).
+
+        x (list of dimension: niamges, natoms, 3): x, y, z coord of the path 
         """
 
         total_forces = []
@@ -483,8 +482,8 @@ class IDPPSolver:
         """
         Conduct steric clash removal based on given path.
 
-        path (list of Structure): idpp path generated. The first and last
-            structures coorepond to the initial and final structures.
+        path (list of Structures): initial path for clash removal. The first and last
+            structures coorepond to the initial and final states.
         k_steric (float): spring constant for steric hinderance.
         steric_threshold (float): atoms with internuclear distance smaller
             than this threshold will be subject to spring force.
@@ -504,9 +503,9 @@ class IDPPSolver:
             image_coords.append(latt.get_cartesian_coords(frac_coord_temp))
         image_coords = np.array(image_coords).reshape(self.nimages, self.natoms, 3)
         # calculate distance matrix for each images
-        original_distances = []
-        for ni in range(self.nimages):
-            original_distances.append(images[ni].distance_matrix)
+        # original_distances = []
+        # for ni in range(self.nimages):
+        #     original_distances.append(images[ni].distance_matrix)
         # only moving_atoms are allowed to move
         if moving_atoms is None:
             moving_atoms = list(range(len(self.structures[0])))
@@ -516,45 +515,28 @@ class IDPPSolver:
         initial_step_size = step_size
 
         # get forces and disp_mat of first step
-        (
-            forces,
-            energies,
-            rpl_index,
-            rpl_f,
-            attr_index,
-            attr_f,
-        ) = self._get_clash_forces_and_energy(
-            image_coords=image_coords, original_distances=original_distances, **kwargs
-        )
+
+        forces = self._get_clash_forces_and_energy(image_coords=image_coords, **kwargs)
         disp_mat = step_size * forces[:, moving_atoms, :]
 
         # monitoring
-        attr_force_log = []
-        attr_index_log = []
-        rpl_force_log = []
-        rpl_index_log = []
-        disp_log = []
+        # attr_force_log = []
+        # attr_index_log = []
+        # rpl_force_log = []
+        # rpl_index_log = []
+        # disp_log = []
         progress = 0
         for n in range(max_iter):
             # get forces and energies
             # TODO calculate energy and use it as part of iteration criteria
-            (
-                forces,
-                energies,
-                rpl_index,
-                rpl_f,
-                attr_index,
-                attr_f,
-            ) = self._get_clash_forces_and_energy(
-                image_coords=image_coords,
-                original_distances=original_distances,
-                **kwargs
+            forces = self._get_clash_forces_and_energy(
+                image_coords=image_coords, **kwargs
             )
-            # monitoring
-            attr_force_log.append(attr_f)
-            attr_index_log.append(attr_index)
-            rpl_force_log.append(rpl_f)
-            rpl_index_log.append(rpl_index)
+            # # monitoring
+            # attr_force_log.append(attr_f)
+            # attr_index_log.append(attr_index)
+            # rpl_force_log.append(rpl_f)
+            # rpl_index_log.append(rpl_index)
 
             # dynamically change step size
             prev_max_force = max_force
@@ -587,9 +569,9 @@ class IDPPSolver:
 
             # monitoring
             # get max displacement of each iamges
-            scalar_disp = np.linalg.norm(disp_mat, axis=2)
-            max_scalar_disp = np.amax(scalar_disp, axis=1)
-            disp_log.append(max_scalar_disp)
+            # scalar_disp = np.linalg.norm(disp_mat, axis=2)
+            # max_scalar_disp = np.amax(scalar_disp, axis=1)
+            # disp_log.append(max_scalar_disp)
             # monitoring progress
             curProgress = np.floor(n / max_iter * 10)
             if not curProgress == progress:
@@ -625,12 +607,115 @@ class IDPPSolver:
         clash_removed_path.append(self.structures[-1])
         return (
             clash_removed_path,
-            attr_force_log,
-            attr_index_log,
-            rpl_force_log,
-            rpl_index_log,
-            disp_log,
+            # attr_force_log,
+            # attr_index_log,
+            # rpl_force_log,
+            # rpl_index_log,
+            # disp_log,
         )
+
+    def clash_removal_NEB(
+        self,
+        path,
+        maxiter,
+        moving_atoms=None,
+        step_size=0.05,
+        max_disp=0.1,
+        max_iter=200,
+        gtol=1e-3,
+        step_update_method="decay",
+        base_step=0.01,
+        max_step=0.05,
+        spring_const=5.0,
+        **kwargs
+    ):
+        """
+        Conduct clash removal process on given path with NEB.
+
+        Args:
+        maxiter (int): maximum iteration path (list of Structures): initial path for
+        clash removal. The first and last structures coorepond to the initial and final
+        states.
+        moving_atoms (list of int): index of atoms that are allowed to move
+        during NEB. If None, then all atoms are allowed to move.
+        """
+
+        # Construct cartesian coords for path
+        # minimization is updated on path_coords not images
+
+        # from path generate cart_coords
+        latt = self.structures[0].lattice
+        initial_images = path[1:-1]
+        image_coords = []
+        for ni, i in itertools.product(range(self.nimages), range(self.natoms)):
+            # no getter for cart_coords attribute, so has to do this
+            frac_coord_temp = initial_images[ni][i].frac_coords
+            image_coords.append(latt.get_cartesian_coords(frac_coord_temp))
+        image_coords = np.array(image_coords).reshape(self.nimages, self.natoms, 3)
+        # add initial and final state to path_coords
+        path_coords = [self.init_coords[0], *image_coords, self.init_coords[-1]]
+        path_coords = np.array(path_coords)
+
+        # if moving_atoms is [], then all atoms are allowed to move
+        if moving_atoms:
+            moving_atoms = list(range(len(self.structures[0])))
+
+        max_forces = [float("inf")]
+        for n in range(maxiter):
+            # for each iteration clash force is evaluated on latest image coords
+            clash_forces = self._get_clash_forces_and_energy(
+                image_coords=path_coords[1:-1], **kwargs
+            )
+            # total force = clash force (perpendicular to tangent)
+            #               + spring force (along tangent)
+            # _get_total_forces requires all coords including initial and final states
+            # but it will not modify the coords
+            total_forces = self._get_total_forces(
+                path_coords, clash_forces, spring_const
+            )
+            # calculate displacement. disp_mat[ni][nn][3]
+            disp_mat = step_size * total_forces[:, moving_atoms, :]
+            disp_mat = np.where(
+                np.abs(disp_mat) > max_disp, np.sign(disp_mat) * max_disp, disp_mat
+            )
+            # update images_coords
+            path_coords[1:-1, moving_atoms] += disp_mat
+
+            # calculate max force and store
+            max_forces.append(np.abs(total_forces[:, moving_atoms, :]).max())
+            # stop criteria
+            if max_forces[-1] < gtol:
+                break
+
+            # change step size for better optimization
+            if max_forces[-1] < max_forces[-2]:
+                step_size = step_size * 1 / (1 + 0.01 * n)
+        else:
+            print("current max force: {}".format(max_forces[-1]))
+            warnings.warn(
+                "CR-NEB: Maximum iteration number is reached without convergence!",
+                UserWarning,
+            )
+
+        # generate the improved image structure
+        clash_removed_path = [self.structures[0]]
+        for ni in range(self.nimages):
+            new_sites = []
+            for site, cart_coords in zip(self.structures[ni + 1], path_coords[ni + 1]):
+                new_site = PeriodicSite(
+                    site.species,
+                    coords=cart_coords,
+                    lattice=site.lattice,
+                    coords_are_cartesian=True,
+                    properties=site.properties,
+                )
+                new_sites.append(new_site)
+
+            clash_removed_path.append(Structure.from_sites(new_sites))
+        # Also include end-point structure.
+        clash_removed_path.append(self.structures[-1])
+
+        return clash_removed_path
 
     @staticmethod
     def _get_triangular_step(
@@ -654,7 +739,7 @@ class IDPPSolver:
     def _get_clash_forces_and_energy(
         self,
         image_coords,
-        original_distances,
+        # original_distances=None,
         k_steric=5.0,
         steric_threshold=None,
         steric_tol=1e-8,
@@ -672,6 +757,8 @@ class IDPPSolver:
         steric_shreshold (float): atoms with internulcear distance smaller than
             this value will be subject to repulsive force.
 
+        Returns:
+            Clash_forces[ni][nn]
         """
         # from cart coords get internuclear distance for each images
         image_dists = []
@@ -717,12 +804,13 @@ class IDPPSolver:
             #          * direction)
             # else:
             f = k_steric * delta_d ** 2 * direction
+            # force and counter force
             repulsive_forces[ni][i] += f
             repulsive_forces[ni][j] += -f
         # monitor repulsive forces
-        scalar_rpl_force = np.linalg.norm(repulsive_forces, axis=2)
-        max_rpl_force_index = np.argmax(scalar_rpl_force, axis=1)
-        max_rpl_force = np.amax(scalar_rpl_force, axis=1)
+        # scalar_rpl_force = np.linalg.norm(repulsive_forces, axis=2)
+        # max_rpl_force_index = np.argmax(scalar_rpl_force, axis=1)
+        # max_rpl_force = np.amax(scalar_rpl_force, axis=1)
 
         # calculate attractive forces
         attractive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
@@ -739,24 +827,17 @@ class IDPPSolver:
                     )
                 )
                 f = k_bonded * delta_d ** 2 * direction
+                # two bonded_neighbors will be returned for a pair of atoms
                 attractive_forces[ni][i] += f
 
-        # monitor attractive forces
-        scalar_attr_force = np.linalg.norm(attractive_forces, axis=2)
-        max_attr_force_index = np.argmax(scalar_attr_force, axis=1)
-        max_attr_force = np.amax(scalar_attr_force, axis=1)
+        # # monitor attractive forces
+        # scalar_attr_force = np.linalg.norm(attractive_forces, axis=2)
+        # max_attr_force_index = np.argmax(scalar_attr_force, axis=1)
+        # max_attr_force = np.amax(scalar_attr_force, axis=1)
 
         clash_forces = repulsive_forces + attractive_forces
-        # TODO calculate energy
-        energies = np.zeros(self.nimages)
-        return (
-            clash_forces,
-            energies,
-            max_rpl_force_index,
-            max_rpl_force,
-            max_attr_force_index,
-            max_attr_force,
-        )
+
+        return clash_forces
 
     def _find_bonded_neighbors(
         self,
@@ -799,6 +880,7 @@ class IDPPSolver:
             for na, neighbors_data in enumerate(points_neighbors):
                 # point_neighbors: List[PeriodicNeighbor] = []
                 point_neighbors = []
+                # atom is so seperated from other (more than r_threshold)
                 if len(neighbors_data) < 1:
                     neighbors[ni].append([])
                     warnings.warn(
@@ -825,16 +907,6 @@ class IDPPSolver:
                 point_neighbors.sort(key=attrgetter("nn_distance"))
                 neighbors_temp.append(point_neighbors)
             neighbors.append(neighbors_temp)
-        #  for ni in range(self.nimages):
-        #     temp = images[ni].get_all_neighbors(r_threshold)
-        #     for na in range(self.natoms):
-        #         if (len(temp[na]) == 0):
-        #             raise Exception('No neighbors found in image%02d atom%d'
-        #                             % (ni, na))
-        #         temp[na].sort(key=attrgetter('distance'))
-        #     neighbors.append(temp)
-
-        # determine whcih neighbor atoms need bonding
         cases = []
 
         for ni in range(self.nimages):
@@ -882,38 +954,60 @@ class IDPPSolver:
             d = max_bond_length
         return d
 
-    def radii_list(self, pi_bond=0.0):
+    def _build_radii_list(self, pi_bond=0.0):
         """
         Build radii list of each atoms in the structure. If steric_threshold or
         max_bond_length is not manually set, radii_list should be used to
         automaticallty generate those parameters according to atomic radius.
         """
         radii = []
+        # use initial state (image 0) as the reference for atom index
+        initial = self.structures[0]
+
+        # radii_table will overide radii of pymatgen element atomic_radius.
+        # The value for Alkali metals (Li, Na, K) is measured on models of ions
+        # adsorped on graphene, therefore it has accounted for the pi_bond radius.
+        # Other metals are measured on corresponding unit cells of Material Studio.
+        radii_table = {
+            Element("Li"): 0.9,
+            Element("Na"): 1.16,
+            Element("K"): 1.52,
+            Element("Al"): 1.43,
+            Element("Ni"): 1.25,
+            Element("Cu"): 1.278,
+        }
         for i in range(self.natoms):
-            r = self._get_radius(i, pi_bond)
-            radii.append(r)
+            if initial[i].species.is_element:
+                e = initial[i].species.elements[0]
+                if e in radii_table:
+                    radii.append(radii_table[e] + pi_bond)
+                else:
+                    radii.append(e.atomic_radius + pi_bond)
+                # show which radius is being used
+                print("element:{} radius:{}".format(e, radii[-1]))
         return radii
 
-    def _get_radius(self, atom_index, pi_bond):
-        structure = self.structures[0]
-        if structure[atom_index].species.is_element:
-            elmnt = structure[atom_index].species.elements[0]
-            # TODO ionic radii list should be added
-            if elmnt == Element("Li"):
-                r = 0.90 + pi_bond
-                # r = 1.34 + pi_bond
-            elif elmnt == Element("Na"):
-                r = 1.16 + pi_bond
-            elif elmnt == Element("K"):
-                r = 1.52 + pi_bond
-            elif elmnt == Element("C"):
-                r = elmnt.atomic_radius
-            else:
-                r = elmnt.atomic_radius + pi_bond
-        else:
-            raise ValueError("sites in structures should be elements not compositions")
-        print("element:{} radius:{}".format(elmnt, r))
-        return r
+    # def _get_radius(self, atom_index, pi_bond):
+    #     structure = self.structures[0]
+
+    #     if structure[atom_index].species.is_element:
+    #         elmnt = structure[atom_index].species.elements[0]
+    #         # TODO ionic radii list should be added
+    #         if elmnt == Element("Li"):
+    #             r = 0.90 + pi_bond
+    #             # r = 1.34 + pi_bond
+    #         elif elmnt == Element("Na"):
+    #             r = 1.16 + pi_bond
+    #         elif elmnt == Element("K"):
+    #             r = 1.52 + pi_bond
+    #         elif elmnt == Element("C"):
+    #             r = elmnt.atomic_radius
+    #         else:
+    #             r = elmnt.atomic_radius + pi_bond
+    #     else:
+    #         raise ValueError("sites in structures should be elements not compositions")
+    #     print("element:{} radius:{}".format(elmnt, r))
+    #     return r
 
 
 class MigrationPath:
