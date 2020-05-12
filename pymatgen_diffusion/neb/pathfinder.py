@@ -17,6 +17,7 @@ from pymatgen.core.periodic_table import get_el_sp, Element
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.core.lattice import get_points_in_spheres
 from pymatgen.util.coord import all_distances
+from pymatgen.io.lammps.data import LammpsBox
 
 __author__ = "Iek-Heng Chu"
 __version__ = "1.0"
@@ -91,6 +92,13 @@ class IDPPSolver:
                     translations[ni - 1, i, j] = latt.get_cartesian_coords(img)
                     translations[ni - 1, j, i] = -latt.get_cartesian_coords(img)
 
+        # build element string list
+        elements = []
+        for i in structures[0]:
+            elements.append(
+                str(i.species.elements[0]) if i.species.is_element else None
+            )
+
         self.init_coords = np.array(init_coords).reshape(nimages + 2, natoms, 3)
         self.translations = translations
         self.weights = weights
@@ -99,6 +107,8 @@ class IDPPSolver:
         self.nimages = nimages
         self.natoms = natoms
         self.radii_list = self._build_radii_list(pi_bond)
+        self.elements = elements
+        self.lammps_dump_box = None
         self.paramerters = {}
 
     def _screen(self, target_dists: np.array, coords, r=5):
@@ -437,7 +447,7 @@ class IDPPSolver:
         tangent. Note that the spring force is the modified version in the
         literature (e.g. Henkelman et al., J. Chem. Phys. 113, 9901 (2000)).
 
-        x (list of dimension: niamges, natoms, 3): x, y, z coord of the path 
+        x [niamges, natoms, 3]: cartesian coords of the whole path. 
         """
 
         total_forces = []
@@ -661,6 +671,7 @@ class IDPPSolver:
             moving_atoms = list(range(len(self.structures[0])))
 
         max_forces = [float("inf")]
+
         for n in range(maxiter):
             # for each iteration clash force is evaluated on latest image coords
             clash_forces = self._get_clash_forces_and_energy(
@@ -673,6 +684,18 @@ class IDPPSolver:
             total_forces = self._get_total_forces(
                 path_coords, clash_forces, spring_const
             )
+
+            # output dump file for each imaegs
+            for i in range(self.nimages):
+                with open(
+                    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/"
+                    + "pymatgen-diffusion/test/dump_{:02d}".format(i),
+                    "xa",
+                ) as f:
+                    f.write(
+                        self.lammps_dump_str(path_coords[i + 1], total_forces[i], n)
+                    )
+
             # calculate displacement. disp_mat[ni][nn][3]
             disp_mat = step_size * total_forces[:, moving_atoms, :]
             disp_mat = np.where(
@@ -716,6 +739,94 @@ class IDPPSolver:
         clash_removed_path.append(self.structures[-1])
 
         return clash_removed_path
+
+    def lammps_dump_str(self, coords, force_matrix, step):
+        """
+        Output cartesian coordinates and corresponding total forces in
+        lammps dump format.
+
+        Args:
+        coords [nn, 3]: Cartesian coords of each atoms during optimization
+        force_matrix [nn, 3]: force to output
+        step: time step starts with 0
+        Return:
+        str: dump string representation for each time step.
+        """
+        # concatenation by join a list is significantly faster than += string
+        dump = []
+        # append header
+        dump.append("ITEM: TIMESTEP\n")
+        dump.append("{}\n".format(step))
+        dump.append("ITEM: NUMBER OF ATOMS\n")
+        dump.append("{}\n".format(self.natoms))
+
+        # append box bounds in lammps dump format
+        if self.lammps_dump_box is None:
+            lmpbox = self.lattice_2_dump_lmpbox(self.structures[0].lattice)
+            self.lammps_dump_box = self.get_box_str(lmpbox)
+            dump.append(self.lammps_dump_box)
+        else:
+            dump.append(self.lammps_dump_box)
+
+        # append coords and forces
+        dump.append("ITEM: ATOMS id type x y z fx fy fz\n")
+        for i in range(self.natoms):
+            dump.append("{} {} ".format(i, self.elements[i]))
+            for j in range(3):
+                dump.append("{:.6f} ".format(coords[i][j]))
+            for j in range(3):
+                dump.append("{:.6f} ".format(force_matrix[i][j]))
+            dump.append("\n")
+        return "".join(dump)
+
+    def lattice_2_dump_lmpbox(self, lattice, origin=(0, 0, 0)):
+        """
+        Converts a lattice object to LammpsBox,Adapted from
+        pytmatgen.core.io.lammps.data.lattice_2_lmpbox. The original lmpbox is by lammps
+        data format which is different from dump format in bounds definition. Note that
+        this method will result in wrong lattice matrix so cannnot converted back into
+        pymatgen lattice.
+
+        Args:
+            lattice (Lattice): Input lattice.
+            origin: A (3,) array/list of floats setting lower bounds of
+                simulation box. Default to (0, 0, 0).
+
+        Returns:
+            LammpsBox
+
+        """
+        a, b, c = lattice.abc
+        xlo, ylo, zlo = origin
+        xhi = a + xlo
+        m = lattice.matrix
+        xy = np.dot(m[1], m[0] / a)
+        yhi = np.sqrt(b ** 2 - xy ** 2) + ylo
+        xz = np.dot(m[2], m[0] / a)
+        yz = (np.dot(m[1], m[2]) - xy * xz) / (yhi - ylo)
+        zhi = np.sqrt(c ** 2 - xz ** 2 - yz ** 2) + zlo
+        tilt = None if lattice.is_orthogonal else [xy, xz, yz]
+        xlo_bound = xlo + min(0.0, xy, xz, xy + xz)
+        xhi_bound = xhi + max(0.0, xy, xz, xy + xz)
+        ylo_bound = ylo + min(0.0, yz)
+        yhi_bound = yhi + max(0.0, yz)
+        bounds = [[xlo_bound, xhi_bound], [ylo_bound, yhi_bound], [zlo, zhi]]
+        return LammpsBox(bounds, tilt)
+
+    def get_box_str(self, lmpbox: LammpsBox):
+        is_orthogonal = lmpbox.tilt is None
+        m = lmpbox.bounds.copy()
+        out_str = []
+        out_str.append(
+            "ITEM: BOX BOUNDS pp pp pp\n"
+            if is_orthogonal
+            else "ITEM: BOX BOUNDS xy xz yz pp pp pp\n"
+        )
+        for i in range(len(m)):
+            for j in m[i]:
+                out_str.append("{:.6f} ".format(j))
+            out_str.append("\n" if is_orthogonal else "{:.6f}\n".format(lmpbox.tilt[i]))
+        return "".join(out_str)
 
     @staticmethod
     def _get_triangular_step(
