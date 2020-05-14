@@ -6,10 +6,9 @@ import warnings
 import itertools
 from operator import attrgetter
 from typing import List
+import os
 
 import numpy as np
-
-# import copy
 
 from pymatgen.core import Structure, PeriodicSite
 from pymatgen.core.structure import PeriodicNeighbor
@@ -447,7 +446,7 @@ class IDPPSolver:
         tangent. Note that the spring force is the modified version in the
         literature (e.g. Henkelman et al., J. Chem. Phys. 113, 9901 (2000)).
 
-        x [niamges, natoms, 3]: cartesian coords of the whole path. 
+        x [niamges, natoms, 3]: cartesian coords of the whole path.
         """
 
         total_forces = []
@@ -487,7 +486,7 @@ class IDPPSolver:
         step_update_method="decay",
         base_step=0.01,
         max_step=0.05,
-        **kwargs
+        **kwargs,
     ):
         """
         Conduct steric clash removal based on given path.
@@ -628,6 +627,9 @@ class IDPPSolver:
         self,
         path,
         maxiter,
+        dump_dir,
+        dump_CR=True,
+        dump_total=True,
         moving_atoms=None,
         step_size=0.05,
         max_disp=0.1,
@@ -637,7 +639,7 @@ class IDPPSolver:
         base_step=0.01,
         max_step=0.05,
         spring_const=5.0,
-        **kwargs
+        **kwargs,
     ):
         """
         Conduct clash removal process on given path with NEB.
@@ -686,15 +688,33 @@ class IDPPSolver:
             )
 
             # output dump file for each imaegs
-            for i in range(self.nimages):
-                with open(
-                    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/"
-                    + "pymatgen-diffusion/test/dump_{:02d}".format(i),
-                    "xa",
-                ) as f:
-                    f.write(
-                        self.lammps_dump_str(path_coords[i + 1], total_forces[i], n)
-                    )
+            if dump_CR:
+                for i in range(self.nimages):
+                    try:
+                        with open(
+                            os.path.join(dump_dir, "dump_CR_{:02d}".format(i + 1)), "a",
+                        ) as f:
+                            f.write(
+                                self.lammps_dump_str(
+                                    path_coords[i + 1], clash_forces[i], n
+                                )
+                            )
+                    except Exception:
+                        print("invlaid dump path")
+
+            if dump_total:
+                for i in range(self.nimages):
+                    try:
+                        with open(
+                            os.path.join(dump_dir, "dump_{:02d}".format(i + 1)), "a",
+                        ) as f:
+                            f.write(
+                                self.lammps_dump_str(
+                                    path_coords[i + 1], total_forces[i], n
+                                )
+                            )
+                    except Exception:
+                        print("invlaid dump path")
 
             # calculate displacement. disp_mat[ni][nn][3]
             disp_mat = step_size * total_forces[:, moving_atoms, :]
@@ -850,14 +870,14 @@ class IDPPSolver:
     def _get_clash_forces_and_energy(
         self,
         image_coords,
+        max_bond_tol=0.2,
         # original_distances=None,
         k_steric=5.0,
         steric_threshold=None,
         steric_tol=1e-8,
         k_bonded=0.05,
-        max_bond_length=None,
         elastic_limit=0.2,
-        **kwargs
+        **kwargs,
     ):
         """
         calculate forces and energies
@@ -897,7 +917,7 @@ class IDPPSolver:
 
         # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
-            cart_coords=image_coords, max_bond_length=max_bond_length, **kwargs
+            cart_coords=image_coords, **kwargs
         )
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
@@ -934,7 +954,7 @@ class IDPPSolver:
                 delta_d = abs(
                     (
                         np.linalg.norm(coord_bonded - coord_pulling)
-                        - self._get_max_bond_length(i, index, max_bond_length, **kwargs)
+                        - self._get_max_bond_length(i, index, max_bond_tol=max_bond_tol)
                     )
                 )
                 f = k_bonded * delta_d ** 2 * direction
@@ -953,11 +973,10 @@ class IDPPSolver:
     def _find_bonded_neighbors(
         self,
         cart_coords,
-        max_bond_length: float = None,
         moving_sites: List[List[PeriodicSite]] = None,
         r_threshold: float = 5.0,
         numerical_tol: float = 1e-8,
-        **kwargs
+        **kwargs,
     ):
         """
         Alls atoms are assumed to be connected. Any atom with a distance to its cloest
@@ -1026,9 +1045,8 @@ class IDPPSolver:
                     continue
                 min_distance = neighbors[ni][na][0].nn_distance
                 closest_nei_id = neighbors[ni][na][0].index
-                max_d = self._get_max_bond_length(
-                    na, closest_nei_id, max_bond_length, **kwargs
-                )
+                # get max_bond_length of atom na and its neighbor
+                max_d = self._get_max_bond_length(na, closest_nei_id, max_bond_tol=0.2)
                 if min_distance > max_d:
                     # if the nearest neighbor is far enough then this atom
                     # needs bonding
@@ -1058,11 +1076,8 @@ class IDPPSolver:
             d = parameter
         return d
 
-    def _get_max_bond_length(self, atom1, atom2, max_bond_length, max_bond_tol=0.2):
-        if max_bond_length is None:
-            d = self.radii_list[atom1] + self.radii_list[atom2] + max_bond_tol
-        else:
-            d = max_bond_length
+    def _get_max_bond_length(self, atom1, atom2, max_bond_tol):
+        d = self.radii_list[atom1] + self.radii_list[atom2] + max_bond_tol
         return d
 
     def _build_radii_list(self, pi_bond=0.0):
