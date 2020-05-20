@@ -4,9 +4,9 @@
 
 import warnings
 import itertools
-from operator import attrgetter
 from typing import List
 import os
+from operator import attrgetter
 
 import numpy as np
 
@@ -18,7 +18,7 @@ from pymatgen.core.lattice import get_points_in_spheres
 from pymatgen.util.coord import all_distances
 from pymatgen.io.lammps.data import LammpsBox
 
-__author__ = "Iek-Heng Chu"
+__author__ = "Iek-Heng Chu, Guoyuan Liu"
 __version__ = "1.0"
 __date__ = "March 14, 2017"
 
@@ -706,7 +706,8 @@ class IDPPSolver:
                 for i in range(self.nimages):
                     try:
                         with open(
-                            os.path.join(dump_dir, "dump_{:02d}".format(i + 1)), "a",
+                            os.path.join(dump_dir, "dump_total_{:02d}".format(i + 1)),
+                            "a",
                         ) as f:
                             f.write(
                                 self.lammps_dump_str(
@@ -891,12 +892,15 @@ class IDPPSolver:
         Returns:
             Clash_forces[ni][nn]
         """
+        # get lattice abc
+        latt_abc = self.structures[0].lattice.abc
         # from cart coords get internuclear distance for each images
         image_dists = []
         for ni in range(self.nimages):
             image_dists.append(all_distances(image_coords[ni], image_coords[ni]))
 
         # find steric hindered atoms
+        # TODO current method does not consider PBC
         steric_hindered = []
         for ni in range(self.nimages):
             for i, j in itertools.combinations(range(self.natoms), 2):
@@ -946,26 +950,45 @@ class IDPPSolver:
         # calculate attractive forces
         attractive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in bonded_neighbors:
-            ni, i, indices = case[0], case[1], case[2]
+            # ni, i, indices = case[0], case[1], case[2]
+            ni, i, nei = case
+            # debug
+            print("{}\t{}\t{}\t{} ".format(ni, i, nei.index, nei.nn_distance))
+            # the convention here is that atom i is getting "pulled" by its neighbors
             coord_bonded = image_coords[ni][i]
-            for index in indices:
-                coord_pulling = image_coords[ni][index]
-                direction = self.get_unit_vector(coord_pulling - coord_bonded)
-                delta_d = abs(
-                    (
-                        np.linalg.norm(coord_bonded - coord_pulling)
-                        - self._get_max_bond_length(i, index, max_bond_tol=max_bond_tol)
-                    )
+            coord_pulling = image_coords[ni][nei.index]
+            # get direction (towards pulling atoms) considering PBC
+            coord_diff = np.subtract(coord_pulling, coord_bonded)
+            for coord_index in range(3):
+                # check if the current direction is over boundary
+                if coord_diff[coord_index] > latt_abc[coord_index] / 2:
+                    coord_diff[coord_index] -= latt_abc[coord_index]
+            direction = self.get_unit_vector(coord_diff)
+
+            # delta_d = abs(
+            #     (
+            #         np.linalg.norm(coord_bonded - coord_pulling)
+            #         - self._get_max_bond_length(i, index, max_bond_tol=max_bond_tol)
+            #     )
+            # )
+            # get displacement
+            delta_d = nei.nn_distance - self._get_max_bond_length(
+                i, nei.index, max_bond_tol=max_bond_tol
+            )
+            f = (k_bonded * delta_d ** 2) * direction
+            print(
+                "attractive force applied on image:{} atom:{} direction:{}".format(
+                    ni, i, direction
                 )
-                f = k_bonded * delta_d ** 2 * direction
-                # two bonded_neighbors will be returned for a pair of atoms
-                attractive_forces[ni][i] += f
+            )
+            attractive_forces[ni][i] += f
 
         # # monitor attractive forces
         # scalar_attr_force = np.linalg.norm(attractive_forces, axis=2)
         # max_attr_force_index = np.argmax(scalar_attr_force, axis=1)
         # max_attr_force = np.amax(scalar_attr_force, axis=1)
 
+        print("{}\n{}".format(repulsive_forces, attractive_forces))
         clash_forces = repulsive_forces + attractive_forces
 
         return clash_forces
@@ -973,31 +996,39 @@ class IDPPSolver:
     def _find_bonded_neighbors(
         self,
         cart_coords,
-        moving_sites: List[List[PeriodicSite]] = None,
+        moving_sites=None,
         r_threshold: float = 5.0,
         numerical_tol: float = 1e-8,
-        **kwargs,
+        max_bond_tol=0.2,
     ):
         """
-        Alls atoms are assumed to be connected. Any atom with a distance to its cloest
-        neighbor larger than max_bond_length will be subjected to bonding force. The
-        force is applied by all the neighbors within a spheric range whose raduis is
-        r_threshold.
+        Alls atoms are assumed to be connected. For any atoms, if its closest neighbor
+        is further than the corresponding max_bond_length, then all its neighbors will
+        pull the atom. The neighbor atom pairs are searched within a radius using
+        pymatgen.core.lattice.get_points_in_spheres().
 
         Args:
             cart_coords ([ni,na,3]): Cartesian coords of current optimizing
                 structure.
-            moving_sites (periodic sites[ni,n]): Sites of atoms allowed to move
+            moving_sites: list of index of atoms allowed to move
             r (float): radius of the search range.
+
+        Return:
+            cases (2D list): [image number, atom index, neighbor object].
         """
         lattice = self.structures[0].lattice
-        # TODO compute neighbors for moving_atoms only
-        # if moving_sites is None:
-        moving_coords = cart_coords.copy()
-        # find neighbors and sort them on distance
+
+        if moving_sites is None:
+            moving_coords = cart_coords.copy()
+        else:
+            moving_coords = cart_coords[:, moving_sites, :]
+
+        # find all neighbors and return those should be bounded
         # neighbors = List[List[List[PeriodicNeighbor]]]
         neighbors = []
         for ni in range(self.nimages):
+            # get_points_in_spheres return
+            # List[List[Tuple[coords, distance, index, image]]]
             points_neighbors = get_points_in_spheres(
                 cart_coords[ni],
                 moving_coords[ni],
@@ -1006,7 +1037,7 @@ class IDPPSolver:
                 numerical_tol=numerical_tol,
                 lattice=lattice,
             )
-            neighbors_temp = []
+            image_neighbors = []
             for na, neighbors_data in enumerate(points_neighbors):
                 # point_neighbors: List[PeriodicNeighbor] = []
                 point_neighbors = []
@@ -1015,18 +1046,21 @@ class IDPPSolver:
                     neighbors[ni].append([])
                     warnings.warn(
                         "No neighbor atoms found for image %02d \
-                                  atom %d"
+                                  atom %d. A larger neighbor threshold may be needed."
                         % (ni, na),
                         UserWarning,
                     )
                     continue
                 for n in neighbors_data:
+                    # get cart coords, nn_distance, atom index and image
                     coord, d, index, image = n
+                    # wrap neighbors to PeriodicNeighbor object
+                    # TODO check if index is the same as the POSCAR
+                    # exclude atoms that are too close and itself
                     if d > numerical_tol:
-                        # exclude atoms that are too close and itself
                         neighbor = PeriodicNeighbor(
                             species=self.structures[0][index].species,
-                            coords=coord,
+                            coords=lattice.get_fractional_coords(coord),
                             lattice=lattice,
                             properties=self.structures[0][index].properties,
                             nn_distance=d,
@@ -1035,26 +1069,25 @@ class IDPPSolver:
                         )
                         point_neighbors.append(neighbor)
                 point_neighbors.sort(key=attrgetter("nn_distance"))
-                neighbors_temp.append(point_neighbors)
-            neighbors.append(neighbors_temp)
-        cases = []
+                image_neighbors.append(point_neighbors)
+            neighbors.append(image_neighbors)
 
+        # judge if the neighbor should be bounded, if so, append to the case
+        cases = []
         for ni in range(self.nimages):
             for na in range(self.natoms):
-                if len(neighbors[ni][na]) < 1:
+                # if there is no neighbors for certain atom, jump to next loop
+                if not neighbors[ni][na]:
                     continue
-                min_distance = neighbors[ni][na][0].nn_distance
-                closest_nei_id = neighbors[ni][na][0].index
-                # get max_bond_length of atom na and its neighbor
-                max_d = self._get_max_bond_length(na, closest_nei_id, max_bond_tol=0.2)
-                if min_distance > max_d:
-                    # if the nearest neighbor is far enough then this atom
-                    # needs bonding
-                    indices = []
-                    # all neighbors are bonded
-                    for neighbor_site in neighbors[ni][na]:
-                        indices.append(neighbor_site.index)
-                    cases.append([ni, na, indices])
+                # cloeset neighbor atoms further than max_bond_length, atom will be bonded
+                # min_distance = min([nei.nn_distance for nei in neighbors[ni][na]])
+                closest_nei = neighbors[ni][na][0]
+                if closest_nei.nn_distance > self._get_max_bond_length(
+                    na, closest_nei.index, max_bond_tol=max_bond_tol
+                ):
+                    for nei in neighbors[ni][na]:
+                        # print(">>>ni {} na {} nei_index {}  nei_distance {}".format(ni, na, nei.index, nei.nn_distance))
+                        cases.append([ni, na, nei])
         # # DEBUG
         # with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt',
         # 'a')\
@@ -1095,6 +1128,7 @@ class IDPPSolver:
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
         # Other metals are measured on corresponding unit cells of Material Studio.
         radii_table = {
+            Element("H"): 1.0,  # for testing purpose only
             Element("Li"): 0.9,
             Element("Na"): 1.16,
             Element("K"): 1.52,

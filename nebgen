@@ -64,7 +64,7 @@ max_bond_tol = CR_config.getfloat("bond-length-tolerance", 0.2)
 base_step = CR_config.getfloat("base-step-size", 0.01)
 max_step = CR_config.getfloat("max-step-size", 0.05)
 r_threshold = CR_config.getfloat("neighbor-radius", 5.0)
-is_CR_NEB = CR_config.getboolean("use-NEB", False)
+is_CR_NEB = CR_config.getboolean("use-NEB", True)
 # TODO is_log = false # turn on logging
 
 # Rerun parameters
