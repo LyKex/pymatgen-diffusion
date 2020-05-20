@@ -15,7 +15,7 @@ from pymatgen.core.structure import PeriodicNeighbor
 from pymatgen.core.periodic_table import get_el_sp, Element
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.core.lattice import get_points_in_spheres
-from pymatgen.util.coord import all_distances
+from pymatgen.util.coord import all_distances, pbc_diff
 from pymatgen.io.lammps.data import LammpsBox
 
 __author__ = "Iek-Heng Chu, Guoyuan Liu"
@@ -888,28 +888,29 @@ class IDPPSolver:
         k_steric (float): spring constant for steric hinderance
         steric_shreshold (float): atoms with internulcear distance smaller than
             this value will be subject to repulsive force.
+        steric_tol (float): atoms too close together will be regarded as same atoms
 
         Returns:
             Clash_forces[ni][nn]
         """
         # get lattice abc
-        latt_abc = self.structures[0].lattice.abc
-        # from cart coords get internuclear distance for each images
-        image_dists = []
+        lattice = self.structures[0].lattice
+        latt_abc = lattice.abc
+        # get frac_coords of current image_coords
+        frac_image_coords = []
         for ni in range(self.nimages):
-            image_dists.append(all_distances(image_coords[ni], image_coords[ni]))
-
+            frac_image_coords.append(lattice.get_fractional_coords(image_coords[ni]))
+            
         # find steric hindered atoms
-        # TODO current method does not consider PBC
         steric_hindered = []
         for ni in range(self.nimages):
             for i, j in itertools.combinations(range(self.natoms), 2):
-                if (
-                    image_dists[ni][i][j]
-                    < self._get_steric_threshold(i, j, steric_threshold)
-                    and image_dists[ni][i][j] > steric_tol
-                ):
-                    steric_hindered.append([ni, i, j])
+                # get frac_coord diff considering pbc
+                diff = pbc_diff(frac_image_coords[ni][i], frac_image_coords[ni][j])
+                # convert back to cart coords
+                dist = np.linalg.norm(lattice.get_cartesian_coords(diff))
+                if dist < self._get_steric_threshold(i, j, steric_threshold) and dist > steric_tol:
+                    steric_hindered.append([ni, i, j, dist])
         # # DEBUG
         # with open(
         #         'C:\\ComputMatSci\\IDPP_test\\pymatgen\\steric_hinderance.txt',
@@ -926,18 +927,12 @@ class IDPPSolver:
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in steric_hindered:
-            ni, i, j = case[0], case[1], case[2]
+            ni, i, j, r = case 
             coord1 = image_coords[ni][i]
             coord2 = image_coords[ni][j]
-            direction = self.get_unit_vector(coord1 - coord2)
-            r = np.linalg.norm(coord1 - coord2)
+            # direction pointing towards atom i
+            direction = self.get_direction_pbc(coord1, coord2)
             delta_d = abs(r - self._get_steric_threshold(i, j, steric_threshold))
-            # if (abs(r-original_distances[ni][i][j]) > elastic_limit):
-            #     f = ((k_steric * delta_d**2
-            #          + (abs(r-original_distances[ni][i][j])-elastic_limit)**2
-            #          * 1e8)
-            #          * direction)
-            # else:
             f = k_steric * delta_d ** 2 * direction
             # force and counter force
             repulsive_forces[ni][i] += f
@@ -958,29 +953,18 @@ class IDPPSolver:
             coord_bonded = image_coords[ni][i]
             coord_pulling = image_coords[ni][nei.index]
             # get direction (towards pulling atoms) considering PBC
-            coord_diff = np.subtract(coord_pulling, coord_bonded)
-            for coord_index in range(3):
-                # check if the current direction is over boundary
-                if coord_diff[coord_index] > latt_abc[coord_index] / 2:
-                    coord_diff[coord_index] -= latt_abc[coord_index]
-            direction = self.get_unit_vector(coord_diff)
+            direction = self.get_direction_pbc(coord_pulling, coord_bonded)
 
-            # delta_d = abs(
-            #     (
-            #         np.linalg.norm(coord_bonded - coord_pulling)
-            #         - self._get_max_bond_length(i, index, max_bond_tol=max_bond_tol)
-            #     )
-            # )
             # get displacement
             delta_d = nei.nn_distance - self._get_max_bond_length(
                 i, nei.index, max_bond_tol=max_bond_tol
             )
             f = (k_bonded * delta_d ** 2) * direction
-            print(
-                "attractive force applied on image:{} atom:{} direction:{}".format(
-                    ni, i, direction
-                )
-            )
+            # print(
+            #     "attractive force applied on image:{} atom:{} direction:{}".format(
+            #         ni, i, direction
+            #     )
+            # )
             attractive_forces[ni][i] += f
 
         # # monitor attractive forces
@@ -988,7 +972,6 @@ class IDPPSolver:
         # max_attr_force_index = np.argmax(scalar_attr_force, axis=1)
         # max_attr_force = np.amax(scalar_attr_force, axis=1)
 
-        print("{}\n{}".format(repulsive_forces, attractive_forces))
         clash_forces = repulsive_forces + attractive_forces
 
         return clash_forces
@@ -1080,7 +1063,6 @@ class IDPPSolver:
                 if not neighbors[ni][na]:
                     continue
                 # cloeset neighbor atoms further than max_bond_length, atom will be bonded
-                # min_distance = min([nei.nn_distance for nei in neighbors[ni][na]])
                 closest_nei = neighbors[ni][na][0]
                 if closest_nei.nn_distance > self._get_max_bond_length(
                     na, closest_nei.index, max_bond_tol=max_bond_tol
@@ -1088,19 +1070,20 @@ class IDPPSolver:
                     for nei in neighbors[ni][na]:
                         # print(">>>ni {} na {} nei_index {}  nei_distance {}".format(ni, na, nei.index, nei.nn_distance))
                         cases.append([ni, na, nei])
-        # # DEBUG
-        # with open('C:\\ComputMatSci\\IDPP_test\\pymatgen\\neighbors.txt',
-        # 'a')\
-        #         as f:
-        #     f.write('>>>\n')
-        #     for case in cases:
-        #         f.write('image: %02d atom: %03d neighbors: '
-        #                 % (case[0]+1, case[1]+1))
-        #         # all output index starts at 1
-        #         for i in case[2]:
-        #             f.write('%03d ' % (i+1))
-        #         f.write('\n')
         return cases
+
+
+    def get_direction_pbc(self, coord1, coord2):
+        """
+        return a unit vector pointing towards coord1
+        """
+        latt_abc = self.structures[0].lattice.abc
+        coord_diff = np.subtract(coord1, coord2)
+        for coord_index in range(3):
+            # check if the current direction is over boundary
+            if coord_diff[coord_index] > latt_abc[coord_index] / 2:
+                coord_diff[coord_index] -= latt_abc[coord_index]
+        return self.get_unit_vector(coord_diff)
 
     def _get_steric_threshold(self, atom_1, atom_2, parameter):
         if parameter is None:
