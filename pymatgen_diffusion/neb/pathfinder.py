@@ -732,8 +732,8 @@ class IDPPSolver:
                 break
 
             # change step size for better optimization
-            if max_forces[-1] < max_forces[-2]:
-                step_size = step_size * 1 / (1 + 0.01 * n)
+            # if max_forces[-1] < max_forces[-2]:
+            # step_size = step_size * 1 / (1 + 0.01 * n)
         else:
             print("current max force: {}".format(max_forces[-1]))
             warnings.warn(
@@ -900,7 +900,7 @@ class IDPPSolver:
         frac_image_coords = []
         for ni in range(self.nimages):
             frac_image_coords.append(lattice.get_fractional_coords(image_coords[ni]))
-            
+
         # find steric hindered atoms
         steric_hindered = []
         for ni in range(self.nimages):
@@ -909,7 +909,10 @@ class IDPPSolver:
                 diff = pbc_diff(frac_image_coords[ni][i], frac_image_coords[ni][j])
                 # convert back to cart coords
                 dist = np.linalg.norm(lattice.get_cartesian_coords(diff))
-                if dist < self._get_steric_threshold(i, j, steric_threshold) and dist > steric_tol:
+                if (
+                    dist < self._get_steric_threshold(i, j, steric_threshold)
+                    and dist > steric_tol
+                ):
                     steric_hindered.append([ni, i, j, dist])
         # # DEBUG
         # with open(
@@ -927,7 +930,7 @@ class IDPPSolver:
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in steric_hindered:
-            ni, i, j, r = case 
+            ni, i, j, r = case
             coord1 = image_coords[ni][i]
             coord2 = image_coords[ni][j]
             # direction pointing towards atom i
@@ -948,7 +951,7 @@ class IDPPSolver:
             # ni, i, indices = case[0], case[1], case[2]
             ni, i, nei = case
             # debug
-            print("{}\t{}\t{}\t{} ".format(ni, i, nei.index, nei.nn_distance))
+            # print("{}\t{}\t{}\t{} ".format(ni, i, nei.index, nei.nn_distance))
             # the convention here is that atom i is getting "pulled" by its neighbors
             coord_bonded = image_coords[ni][i]
             coord_pulling = image_coords[ni][nei.index]
@@ -1072,18 +1075,16 @@ class IDPPSolver:
                         cases.append([ni, na, nei])
         return cases
 
-
-    def get_direction_pbc(self, coord1, coord2):
+    def get_direction_pbc(self, coords1, coords2):
         """
         return a unit vector pointing towards coord1
+        coords1 and coords2: cartesian coordinates of a single atom
         """
-        latt_abc = self.structures[0].lattice.abc
-        coord_diff = np.subtract(coord1, coord2)
-        for coord_index in range(3):
-            # check if the current direction is over boundary
-            if coord_diff[coord_index] > latt_abc[coord_index] / 2:
-                coord_diff[coord_index] -= latt_abc[coord_index]
-        return self.get_unit_vector(coord_diff)
+        latt = self.structures[0].lattice
+        frac_coords1 = latt.get_fractional_coords(coords1)
+        frac_coords2 = latt.get_fractional_coords(coords2)
+        coord_diff = pbc_diff(frac_coords1, frac_coords2)
+        return self.get_unit_vector(latt.get_cartesian_coords(coord_diff))
 
     def _get_steric_threshold(self, atom_1, atom_2, parameter):
         if parameter is None:
@@ -1112,6 +1113,7 @@ class IDPPSolver:
         # Other metals are measured on corresponding unit cells of Material Studio.
         radii_table = {
             Element("H"): 1.0,  # for testing purpose only
+            # Element("H"): 0.1,  # for testing purpose only
             Element("Li"): 0.9,
             Element("Na"): 1.16,
             Element("K"): 1.52,
