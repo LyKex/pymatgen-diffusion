@@ -674,6 +674,7 @@ class IDPPSolver:
 
         max_forces = [float("inf")]
 
+        initial_step = step_size
         for n in range(maxiter):
             # for each iteration clash force is evaluated on latest image coords
             clash_forces = self._get_clash_forces_and_energy(
@@ -732,8 +733,8 @@ class IDPPSolver:
                 break
 
             # change step size for better optimization
-            # if max_forces[-1] < max_forces[-2]:
-            # step_size = step_size * 1 / (1 + 0.01 * n)
+            if step_update_method == "decay" and max_forces[-1] < max_forces[-2]:
+                step_size = initial_step * (1 / (1 + 0.01 * n))
         else:
             print("current max force: {}".format(max_forces[-1]))
             warnings.warn(
@@ -1112,7 +1113,7 @@ class IDPPSolver:
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
         # Other metals are measured on corresponding unit cells of Material Studio.
         radii_table = {
-            Element("H"): 1.0,  # for testing purpose only
+            #Element("H"): 1.0,  # for testing purpose only
             # Element("H"): 0.1,  # for testing purpose only
             Element("Li"): 0.9,
             Element("Na"): 1.16,
