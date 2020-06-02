@@ -20,14 +20,34 @@ sys.modules[module_name] = module
 spec.loader.exec_module(module)
 from pathfinder import IDPPSolver
 
+module_name = "rmsd"
+spec = importlib.util.spec_from_file_location(
+    module_name,
+    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion/rmsd.py")
+module= importlib.util.module_from_spec(spec)
+sys.modules[module_name] = module
+spec.loader.exec_module(module)
+from rmsd import rmsd_pbc
+
 # read config
 parser = argparse.ArgumentParser(description="Generate initial guess for NEB.")
-parser.add_argument("-i", "--input", nargs=1, help="location of configuration file")
+parser.add_argument(
+    "-i",
+    "--input",
+    nargs=1,
+    help="location of configuration file")
 parser.add_argument("-o", "--output", nargs=1, help="output directory")
 args = parser.parse_args()
 config = configparser.ConfigParser()
-config.read(args.input[0])
+config_file = args.input[0]
+try:
+    config.read(config_file)
+except Exception:
+    print("failed to read config file")
+    sys.exit(1)
 save_dir = args.output[0]
+if not os.path.exists(save_dir):
+    print("output directory does not exit")
 
 # default
 default_conf = config["Default"]
@@ -156,5 +176,11 @@ if not os.path.exists(save_dir):
     os.mkdir(save_dir)
 for n, struct in enumerate(result):
     struct.to(fmt="poscar", filename="{}/POSCAR_{:02d}".format(save_dir, n))
-# else:
-# raise OSError("result file path exits")
+
+
+# check RMSD
+for n in range(len(result) - 1):
+    structure_1_path = "{}/POSCAR_{:02d}".format(save_dir, n)
+    structure_2_path = "{}/POSCAR_{:02d}".format(save_dir, n+1)
+    print("rmsd {} <-> {}: {}".format(n, n + 1,
+                                      rmsd_pbc(structure_1_path, structure_2_path)))
