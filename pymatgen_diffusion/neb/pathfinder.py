@@ -731,8 +731,8 @@ class IDPPSolver:
                 break
 
             # change step size for better optimization
-            if max_forces[-1] < max_forces[-2]:
-                step_size = step_size * 1 / (1 + 0.01 * n)
+            # if max_forces[-1] < max_forces[-2]:
+            #    step_size = step_size * 1 / (1 + 0.01 * n)
         else:
             print("current max force: {}".format(max_forces[-1]))
             warnings.warn(
