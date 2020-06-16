@@ -33,8 +33,11 @@ def rmsd_pbc(file_path_1, file_path_2):
     # convert to cartesian coords difference
     cart_diff = a.lattice.get_cartesian_coords(frac_diff)
 
-    # return
+    # original definition of RMSD
     # return np.sqrt(np.sum(cart_diff ** 2) / natoms)
+
+    # revised definition. The top 5 deviation is considered
+    # aiming to better reflect the difference in structures
     return np.sum(np.sort(np.abs(cart_diff))[:5]) / 5
 
 

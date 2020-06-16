@@ -1113,7 +1113,9 @@ class IDPPSolver:
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
         # Other metals are measured on corresponding unit cells of Material Studio.
         radii_table = {
-            # Element("H"): 1.0,  # for testing purpose only
+            Element("H"): 0.365,
+            Element("C"): 0.7,
+            Element("N"): 0.8,
             # Element("H"): 0.1,  # for testing purpose only
             Element("Li"): 0.9,
             Element("Na"): 1.16,
@@ -1121,6 +1123,7 @@ class IDPPSolver:
             Element("Al"): 1.43,
             Element("Ni"): 1.25,
             Element("Cu"): 1.278,
+            Element("Ag"): 1.445,
         }
         for i in range(self.natoms):
             if initial[i].species.is_element:
