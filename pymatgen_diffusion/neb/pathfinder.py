@@ -623,6 +623,27 @@ class IDPPSolver:
             # disp_log,
         )
 
+    def _NEB_atoms(self, tol=2.0):
+        """
+        Compare initial and final states of the given path and determine if an atom has
+        large enough displacement.
+
+        Args
+        initial: fractional coords of initial state
+        final: fractional coords of final state
+        tol: numerical tolerance in cartesian coords
+        """
+        NEB_atoms = []
+        initial = self.structures[0].frac_coords
+        final = self.structures[-1].frac_coords
+        frac_diff = pbc_diff(initial, final)
+        disp = np.linalg.norm(self.structures[0].lattice.get_cartesian_coords(frac_diff),
+        axis=1)
+        for i in range(self.natoms):
+            if disp[i] > tol:
+                NEB_atoms.append(i)
+        return NEB_atoms
+
     def clash_removal_NEB(
         self,
         path,
@@ -639,6 +660,7 @@ class IDPPSolver:
         base_step=0.01,
         max_step=0.05,
         spring_const=5.0,
+        NEB_atoms=[],
         **kwargs,
     ):
         """
@@ -672,13 +694,19 @@ class IDPPSolver:
         if moving_atoms:
             moving_atoms = list(range(len(self.structures[0])))
 
-        max_forces = [float("inf")]
+        # find NEB atoms
+        NEB_atoms += self._NEB_atoms()
+        if not NEB_atoms:
+            NEB_atoms = range(self.natoms)
+            warnings.warn("No NEB atoms detected. All atoms are considered NEB atoms.")
 
+        # initialize for main loop
+        max_forces = [float("inf")]
         initial_step = step_size
         for n in range(maxiter):
             # for each iteration clash force is evaluated on latest image coords
             clash_forces = self._get_clash_forces_and_energy(
-                image_coords=path_coords[1:-1], **kwargs
+                image_coords=path_coords[1:-1], NEB_atoms=NEB_atoms, **kwargs
             )
             # total force = clash force (perpendicular to tangent)
             #               + spring force (along tangent)
@@ -872,6 +900,7 @@ class IDPPSolver:
     def _get_clash_forces_and_energy(
         self,
         image_coords,
+        NEB_atoms,
         max_bond_tol=0.2,
         # original_distances=None,
         k_steric=5.0,
@@ -926,7 +955,7 @@ class IDPPSolver:
 
         # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
-            cart_coords=image_coords, **kwargs
+            image_coords, NEB_atoms, **kwargs
         )
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
@@ -949,33 +978,29 @@ class IDPPSolver:
         # calculate attractive forces
         attractive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in bonded_neighbors:
-            # ni, i, indices = case[0], case[1], case[2]
-            ni, i, nei = case
-            # debug
-            # print("{}\t{}\t{}\t{} ".format(ni, i, nei.index, nei.nn_distance))
+            ni, i, *neighbors = case
             # the convention here is that atom i is getting "pulled" by its neighbors
-            coord_bonded = image_coords[ni][i]
-            coord_pulling = image_coords[ni][nei.index]
-            # get direction (towards pulling atoms) considering PBC
-            direction = self.get_direction_pbc(coord_pulling, coord_bonded)
+            for nei in neighbors:
+                coord_bonded = image_coords[ni][i]
+                coord_pulling = image_coords[ni][nei.n_index]
+                # get direction (towards pulling atoms) considering PBC
+                direction = self.get_direction_pbc(coord_pulling, coord_bonded)
 
-            # get displacement
-            delta_d = nei.nn_distance - self._get_max_bond_length(
-                i, nei.index, max_bond_tol=max_bond_tol
-            )
-            f = (k_bonded * delta_d ** 2) * direction
-            # print(
-            #     "attractive force applied on image:{} atom:{} direction:{}".format(
-            #         ni, i, direction
-            #     )
-            # )
-            attractive_forces[ni][i] += f
+                # get displacement and calculate force
+                delta_d = nei.nn_distance - self._get_max_bond_length(
+                    i, nei.index, max_bond_tol=max_bond_tol
+                )
+                f = (k_bonded * delta_d ** 2) * direction
 
-        # # monitor attractive forces
-        # scalar_attr_force = np.linalg.norm(attractive_forces, axis=2)
-        # max_attr_force_index = np.argmax(scalar_attr_force, axis=1)
-        # max_attr_force = np.amax(scalar_attr_force, axis=1)
-
+                # apply force on atoms
+                attractive_forces[ni][i] += f
+                # DEBUG monitor attractive forces
+                # print(
+                #     "attractive force applied on image: {} atom: {} \n"
+                #     "direction: {} from {}\n at {} distance {}".format(
+                #         ni, i, direction, nei.n_index, image_coords[ni][nei.n_index], nei.nn_distance
+                #     )
+                # )
         clash_forces = repulsive_forces + attractive_forces
 
         return clash_forces
@@ -983,6 +1008,7 @@ class IDPPSolver:
     def _find_bonded_neighbors(
         self,
         cart_coords,
+        NEB_atoms,
         moving_sites=None,
         r_threshold: float = 5.0,
         numerical_tol: float = 1e-8,
@@ -1001,18 +1027,17 @@ class IDPPSolver:
             r (float): radius of the search range.
 
         Return:
-            cases (2D list): [image number, atom index, neighbor object].
+            cases (2D list): [image number, atom index, BondedNeighbor 1,
+             BondedNeighbor 2...]
         """
         lattice = self.structures[0].lattice
-
         if moving_sites is None:
             moving_coords = cart_coords.copy()
         else:
             moving_coords = cart_coords[:, moving_sites, :]
 
         # find all neighbors and return those should be bounded
-        # neighbors = List[List[List[PeriodicNeighbor]]]
-        neighbors = []
+        cases = []
         for ni in range(self.nimages):
             # get_points_in_spheres return
             # List[List[Tuple[coords, distance, index, image]]]
@@ -1024,56 +1049,17 @@ class IDPPSolver:
                 numerical_tol=numerical_tol,
                 lattice=lattice,
             )
-            image_neighbors = []
-            for na, neighbors_data in enumerate(points_neighbors):
-                # point_neighbors: List[PeriodicNeighbor] = []
-                point_neighbors = []
-                # atom is so seperated from other (more than r_threshold)
-                if len(neighbors_data) < 1:
-                    neighbors[ni].append([])
-                    warnings.warn(
-                        "No neighbor atoms found for image %02d \
-                                  atom %d. A larger neighbor threshold may be needed."
-                        % (ni, na),
-                        UserWarning,
-                    )
-                    continue
-                for n in neighbors_data:
-                    # get cart coords, nn_distance, atom index and image
-                    coord, d, index, image = n
-                    # wrap neighbors to PeriodicNeighbor object
-                    # TODO check if index is the same as the POSCAR
-                    # exclude atoms that are too close and itself
-                    if d > numerical_tol:
-                        neighbor = PeriodicNeighbor(
-                            species=self.structures[0][index].species,
-                            coords=lattice.get_fractional_coords(coord),
-                            lattice=lattice,
-                            properties=self.structures[0][index].properties,
-                            nn_distance=d,
-                            index=index,
-                            image=tuple(image),
-                        )
-                        point_neighbors.append(neighbor)
-                point_neighbors.sort(key=attrgetter("nn_distance"))
-                image_neighbors.append(point_neighbors)
-            neighbors.append(image_neighbors)
+            # for NEB atoms, check if its neighbors need bonding
+            for i in range(self.natoms):
+                if i in NEB_atoms:
+                    c = [ni, i]
+                    for j in range(len(points_neighbors[i])):
+                        _, d, index, _ = points_neighbors[i][j]
+                        # check if the neighbor is far enough
+                        if d > self._get_max_bond_length(i, index, max_bond_tol):
+                            c.append(BondedNeighbor(i, index, d))
+                    cases.append(c)
 
-        # judge if the neighbor should be bounded, if so, append to the case
-        cases = []
-        for ni in range(self.nimages):
-            for na in range(self.natoms):
-                # if there is no neighbors for certain atom, jump to next loop
-                if not neighbors[ni][na]:
-                    continue
-                # cloeset neighbor atoms further than max_bond_length, atom will be bonded
-                closest_nei = neighbors[ni][na][0]
-                if closest_nei.nn_distance > self._get_max_bond_length(
-                    na, closest_nei.index, max_bond_tol=max_bond_tol
-                ):
-                    for nei in neighbors[ni][na]:
-                        # print(">>>ni {} na {} nei_index {}  nei_distance {}".format(ni, na, nei.index, nei.nn_distance))
-                        cases.append([ni, na, nei])
         return cases
 
     def get_direction_pbc(self, coords1, coords2):
@@ -1145,7 +1131,7 @@ class IDPPSolver:
     #         if elmnt == Element("Li"):
     #             r = 0.90 + pi_bond
     #             # r = 1.34 + pi_bond
-    #         elif elmnt == Element("Na"):
+    #         elif set() == Element("Na"):
     #             r = 1.16 + pi_bond
     #         elif elmnt == Element("K"):
     #             r = 1.52 + pi_bond
@@ -1157,6 +1143,22 @@ class IDPPSolver:
     #         raise ValueError("sites in structures should be elements not compositions")
     #     print("element:{} radius:{}".format(elmnt, r))
     #     return r
+
+
+class BondedNeighbor:
+    """
+    container for bonded neighbors used during calculation of bonded force
+    """
+
+    def __init__(self, index, n_index, nn_distance):
+        self.index = index
+        self.n_index = n_index
+        self.nn_distance = nn_distance
+
+    def __repr__(self):
+        return ("atom index: {} neighbor index:{} " "neighbor distance: {}").format(
+            self.index, self.n_index, self.nn_distance
+        )
 
 
 class MigrationPath:
