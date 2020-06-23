@@ -9,6 +9,7 @@ import os
 from operator import attrgetter
 
 import numpy as np
+from tqdm import tqdm
 
 from pymatgen.core import Structure, PeriodicSite
 from pymatgen.core.structure import PeriodicNeighbor
@@ -707,7 +708,7 @@ class IDPPSolver:
         # initialize for main loop
         max_forces = [float("inf")]
         initial_step = step_size
-        for n in range(maxiter):
+        for n in tqdm(range(maxiter)):
             # for each iteration clash force is evaluated on latest image coords
             clash_forces = self._get_clash_forces_and_energy(
                 image_coords=path_coords[1:-1], NEB_atoms=NEB_atoms, **kwargs
