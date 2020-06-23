@@ -642,6 +642,10 @@ class IDPPSolver:
         for i in range(self.natoms):
             if disp[i] > tol:
                 NEB_atoms.append(i)
+        # debug
+        print("\nNEB atoms list\nIndex | Element | Displacement")
+        for n in NEB_atoms:
+            print("{}\t{}\t{}".format(n, self.elements[n], disp[n]))
         return NEB_atoms
 
     def clash_removal_NEB(
@@ -764,7 +768,7 @@ class IDPPSolver:
             if step_update_method == "decay" and max_forces[-1] < max_forces[-2]:
                 step_size = initial_step * (1 / (1 + 0.01 * n))
         else:
-            print("current max force: {}".format(max_forces[-1]))
+            print("\nmax force at end of optimization: {}".format(max_forces[-1]))
             warnings.warn(
                 "CR-NEB: Maximum iteration number is reached without convergence!",
                 UserWarning,
@@ -904,7 +908,7 @@ class IDPPSolver:
         max_bond_tol=0.2,
         # original_distances=None,
         k_steric=5.0,
-        steric_threshold=None,
+        repul_tol=0.0,
         steric_tol=1e-8,
         k_bonded=0.05,
         elastic_limit=0.2,
@@ -923,6 +927,9 @@ class IDPPSolver:
         Returns:
             Clash_forces[ni][nn]
         """
+        # debug
+        # print(k_steric, k_bonded, repul_tol, max_bond_tol)
+
         # get lattice abc
         lattice = self.structures[0].lattice
         latt_abc = lattice.abc
@@ -940,7 +947,7 @@ class IDPPSolver:
                 # convert back to cart coords
                 dist = np.linalg.norm(lattice.get_cartesian_coords(diff))
                 if (
-                    dist < self._get_steric_threshold(i, j, steric_threshold)
+                    dist < self._get_steric_threshold(i, j, repul_tol)
                     and dist > steric_tol
                 ):
                     steric_hindered.append([ni, i, j, dist])
@@ -965,7 +972,7 @@ class IDPPSolver:
             coord2 = image_coords[ni][j]
             # direction pointing towards atom i
             direction = self.get_direction_pbc(coord1, coord2)
-            delta_d = abs(r - self._get_steric_threshold(i, j, steric_threshold))
+            delta_d = abs(r - self._get_steric_threshold(i, j, repul_tol))
             f = k_steric * delta_d ** 2 * direction
             # force and counter force
             repulsive_forces[ni][i] += f
@@ -1073,11 +1080,8 @@ class IDPPSolver:
         coord_diff = pbc_diff(frac_coords1, frac_coords2)
         return self.get_unit_vector(latt.get_cartesian_coords(coord_diff))
 
-    def _get_steric_threshold(self, atom_1, atom_2, parameter):
-        if parameter is None:
-            d = self.radii_list[atom_1] + self.radii_list[atom_2]
-        else:
-            d = parameter
+    def _get_steric_threshold(self, atom_1, atom_2, tol):
+        d = self.radii_list[atom_1] + self.radii_list[atom_2] - tol
         return d
 
     def _get_max_bond_length(self, atom1, atom2, max_bond_tol):
@@ -1099,10 +1103,10 @@ class IDPPSolver:
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
         # Other metals are measured on corresponding unit cells of Material Studio.
         radii_table = {
-            Element("H"): 0.365,
+            # Element("H"): 0.365,
             Element("C"): 0.7,
             Element("N"): 0.8,
-            # Element("H"): 0.1,  # for testing purpose only
+            Element("H"): 1,  # for testing purpose only
             Element("Li"): 0.9,
             Element("Na"): 1.16,
             Element("K"): 1.52,
