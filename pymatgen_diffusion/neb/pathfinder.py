@@ -301,7 +301,7 @@ class IDPPSolver:
         # d_26 = []
         # Iterative minimization
         # neighbor_26 = []
-        for n in range(maxiter):
+        for n in tqdm(range(maxiter)):
             # Get the sets of objective functions, true and total force
             # matrices.
             funcs, true_forces = self._get_funcs_and_forces(coords)
@@ -1067,7 +1067,8 @@ class IDPPSolver:
                         if d > self._get_max_bond_length(i, index, max_bond_tol):
                             c.append(BondedNeighbor(i, index, d))
                     cases.append(c)
-
+        # debug
+        # print(cases)
         return cases
 
     def get_direction_pbc(self, coords1, coords2):
