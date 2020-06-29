@@ -86,6 +86,7 @@ base_step = CR_config.getfloat("base-step-size", 0.01)
 max_step = CR_config.getfloat("max-step-size", 0.05)
 r_threshold = CR_config.getfloat("neighbor-radius", 5.0)
 is_CR_NEB = CR_config.getboolean("use-NEB", True)
+NEB_threshold = CR_config.getfloat("NEB_threshold", 2.0)
 # TODO is_log = false # turn on logging
 
 # Rerun parameters
@@ -150,6 +151,7 @@ if CR_iter and is_CR_NEB:
         max_step=max_step,
         max_bond_tol=max_bond_tol,
         repul_tol=repul_tol,
+        NEB_threshold=NEB_threshold,
         r_threshold=r_threshold,
     )
 # rerun

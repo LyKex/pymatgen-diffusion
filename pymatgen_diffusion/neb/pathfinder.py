@@ -624,7 +624,7 @@ class IDPPSolver:
             # disp_log,
         )
 
-    def _NEB_atoms(self, tol=2.0):
+    def _NEB_atoms(self, threshold):
         """
         Compare initial and final states of the given path and determine if an atom has
         large enough displacement.
@@ -632,16 +632,16 @@ class IDPPSolver:
         Args
         initial: fractional coords of initial state
         final: fractional coords of final state
-        tol: numerical tolerance in cartesian coords
+        threshold: numerical threshold in cartesian coords
         """
         NEB_atoms = []
         initial = self.structures[0].frac_coords
         final = self.structures[-1].frac_coords
         frac_diff = pbc_diff(initial, final)
         disp = np.linalg.norm(self.structures[0].lattice.get_cartesian_coords(frac_diff),
-        axis=1)
+                              axis=1)
         for i in range(self.natoms):
-            if disp[i] > tol:
+            if disp[i] > threshold:
                 NEB_atoms.append(i)
         # debug
         print("\nNEB atoms list\nIndex | Element | Displacement")
@@ -666,6 +666,7 @@ class IDPPSolver:
         max_step=0.05,
         spring_const=5.0,
         NEB_atoms=[],
+        NEB_threshold=2.0,
         **kwargs,
     ):
         """
@@ -700,7 +701,7 @@ class IDPPSolver:
             moving_atoms = list(range(len(self.structures[0])))
 
         # find NEB atoms
-        NEB_atoms += self._NEB_atoms()
+        NEB_atoms += self._NEB_atoms(NEB_threshold)
         if not NEB_atoms:
             NEB_atoms = range(self.natoms)
             warnings.warn("No NEB atoms detected. All atoms are considered NEB atoms.")
@@ -1105,10 +1106,10 @@ class IDPPSolver:
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
         # Other metals are measured on corresponding unit cells of Material Studio.
         radii_table = {
-            # Element("H"): 0.365,
+            Element("H"): 0.365,
             Element("C"): 0.7,
             Element("N"): 0.8,
-            Element("H"): 1,  # for testing purpose only
+            # Element("H"): 1,  # for testing purpose only
             Element("Li"): 0.9,
             Element("Na"): 1.16,
             Element("K"): 1.52,
@@ -1116,6 +1117,12 @@ class IDPPSolver:
             Element("Ni"): 1.25,
             Element("Cu"): 1.278,
             Element("Ag"): 1.445,
+            Element("Bi"): 1.6,
+            Element("Ga"): 1.3,
+            Element("As"): 1.15,
+            Element("Sr"): 1.32,
+            Element("O"): 1.44,
+            Element("Ti"): 0.5,
         }
         for i in range(self.natoms):
             if initial[i].species.is_element:
