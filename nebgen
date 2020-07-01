@@ -24,7 +24,7 @@ module_name = "rmsd"
 spec = importlib.util.spec_from_file_location(
     module_name,
     "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion/rmsd.py")
-module= importlib.util.module_from_spec(spec)
+module = importlib.util.module_from_spec(spec)
 sys.modules[module_name] = module
 spec.loader.exec_module(module)
 from rmsd import rmsd_pbc
@@ -65,7 +65,6 @@ IDPP_ftol = IDPP_config.getfloat("force-tolerance", 1e-5)
 IDPP_gtol = IDPP_config.getfloat("energy-tolerance", 1e-3)
 
 # clash removal parameters
-# TODO is_ion = IDPP_config.getboolean('is-ion',False)
 CR_config = config["Clash Removal"]
 CR_iter = CR_config.getint("max-iteration")
 dump_dir = CR_config.get("dump-directory", None)
@@ -87,6 +86,7 @@ max_step = CR_config.getfloat("max-step-size", 0.05)
 r_threshold = CR_config.getfloat("neighbor-radius", 5.0)
 is_CR_NEB = CR_config.getboolean("use-NEB", True)
 NEB_threshold = CR_config.getfloat("NEB_threshold", 2.0)
+is_ionic = CR_config.getboolean('is-ion', False)
 # TODO is_log = false # turn on logging
 
 # Rerun parameters
@@ -100,7 +100,7 @@ fin = Structure.from_file(final_state)
 
 # initialize IDPPSolver
 obj = IDPPSolver.from_endpoints(
-    endpoints=[ini, fin], nimages=nimages, sort_tol=0, pi_bond=pi_bond
+    endpoints=[ini, fin], nimages=nimages, sort_tol=0,
 )
 # find IDPP path
 if IDPP_iter:
@@ -132,6 +132,7 @@ if CR_iter and not is_CR_NEB:
         step_update_method=optimization_method,
         max_bond_tol=max_bond_tol,
         r_threshold=r_threshold,
+        is_ionic=is_ionic,
     )
     print("--- %.02d seconds ---" % (time.time() - start_time))
 
@@ -153,6 +154,7 @@ if CR_iter and is_CR_NEB:
         repul_tol=repul_tol,
         NEB_threshold=NEB_threshold,
         r_threshold=r_threshold,
+        is_ionic=is_ionic,
     )
 # rerun
 if rr_iter:
@@ -187,4 +189,5 @@ for n in range(len(result) - 1):
     structure_1_path = "{}/POSCAR_{:02d}".format(save_dir, n)
     structure_2_path = "{}/POSCAR_{:02d}".format(save_dir, n+1)
     print("rmsd {} <-> {}: {}".format(n, n + 1,
-                                      rmsd_pbc(structure_1_path, structure_2_path)))
+                                      rmsd_pbc(structure_1_path,
+                                               structure_2_path)))

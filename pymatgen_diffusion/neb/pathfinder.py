@@ -39,7 +39,7 @@ class IDPPSolver:
 
     """
 
-    def __init__(self, structures, pi_bond=0.0):
+    def __init__(self, structures ):
         """
         Initialization.
 
@@ -106,7 +106,6 @@ class IDPPSolver:
         self.target_dists = target_dists
         self.nimages = nimages
         self.natoms = natoms
-        self.radii_list = self._build_radii_list(pi_bond)
         self.elements = elements
         self.lammps_dump_box = None
         self.paramerters = {}
@@ -357,7 +356,7 @@ class IDPPSolver:
         # return (idpp_structures, d_3_4, d_3_9, d_3_10, d_26, neighbor_26)
 
     @classmethod
-    def from_endpoints(cls, endpoints, nimages=5, sort_tol=1.0, pi_bond=0):
+    def from_endpoints(cls, endpoints, nimages=5, sort_tol=1.0):
         """
         A class method that starts with end-point structures instead. The
         initial guess for the IDPP algo is then constructed using linear
@@ -390,7 +389,7 @@ class IDPPSolver:
             else:
                 raise e
 
-        return IDPPSolver(images, pi_bond)
+        return IDPPSolver(images)
 
     def _get_funcs_and_forces(self, x):
         """
@@ -487,6 +486,8 @@ class IDPPSolver:
         step_update_method="decay",
         base_step=0.01,
         max_step=0.05,
+        pi_bond=0.0,
+        is_ionic=False,
         **kwargs,
     ):
         """
@@ -501,6 +502,9 @@ class IDPPSolver:
         **kwargs: keyword arguments for _get_clash_forces_and_energy
 
         """
+
+        # initialize radii list
+        self.radii_list = self._build_radii_list(pi_bond, is_ionic)
         latt = self.structures[0].lattice
         # generate initial structures for each images
         images = path[1:-1]
@@ -667,6 +671,8 @@ class IDPPSolver:
         spring_const=5.0,
         NEB_atoms=[],
         NEB_threshold=2.0,
+        pi_bond=0.0,
+        is_ionic=False,
         **kwargs,
     ):
         """
@@ -680,6 +686,7 @@ class IDPPSolver:
         during NEB. If None, then all atoms are allowed to move.
         """
 
+        self.radii_list = self._build_radii_list(pi_bond, is_ionic)
         # Construct cartesian coords for path
         # minimization is updated on path_coords not images
 
@@ -1091,7 +1098,7 @@ class IDPPSolver:
         d = self.radii_list[atom1] + self.radii_list[atom2] + max_bond_tol
         return d
 
-    def _build_radii_list(self, pi_bond=0.0):
+    def _build_radii_list(self, pi_bond=0.0, is_ionic=False):
         """
         Build radii list of each atoms in the structure. If steric_threshold or
         max_bond_length is not manually set, radii_list should be used to
@@ -1105,34 +1112,65 @@ class IDPPSolver:
         # The value for Alkali metals (Li, Na, K) is measured on models of ions
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
         # Other metals are measured on corresponding unit cells of Material Studio.
-        radii_table = {
-            Element("H"): 0.365,
-            Element("C"): 0.7,
-            Element("N"): 0.8,
-            # Element("H"): 1,  # for testing purpose only
-            Element("Li"): 0.9,
-            Element("Na"): 1.16,
-            Element("K"): 1.52,
-            Element("Al"): 1.43,
-            Element("Ni"): 1.25,
-            Element("Cu"): 1.278,
-            Element("Ag"): 1.445,
-            Element("Bi"): 1.6,
-            Element("Ga"): 1.3,
-            Element("As"): 1.15,
-            Element("Sr"): 1.32,
-            Element("O"): 1.44,
-            Element("Ti"): 0.5,
+        atomic_radii_table = {
+            "C": 0.7,
+            "N": 0.8,
+            # "H": 1,  # for testing purpose only
+            "Al": 1.43,
+            "Ni": 1.25,
+            "Cu": 1.278,
+            "Ag": 1.445,
         }
-        for i in range(self.natoms):
-            if initial[i].species.is_element:
-                e = initial[i].species.elements[0]
-                if e in radii_table:
-                    radii.append(radii_table[e] + pi_bond)
-                else:
-                    radii.append(e.atomic_radius + pi_bond)
-                # show which radius is being used
-                print("element:{} radius:{}".format(e, radii[-1]))
+        ionic_radii_table = {
+            # I A
+            "H": 0.365,
+            "Li": 0.9,
+            "Na": 1.16,
+            "K": 1.52,
+            "Rb": 1.66,
+            # II A
+            "Be": 0.59,
+            "Mg": 0.86,
+            "Ca": 1.14,
+            "Sr": 1.32,
+            # III A
+            "B": 0.41,
+            "Al": 0.68,
+            "Ga": 1.3,
+            # "Ga": 0.76, # conflict
+            "In": 0.94,
+            "Ti": 0.5,
+            # V A
+            "Bi": 1.6,
+            "As": 1.15,
+            # VI A
+            "O": 1.44,
+            # "O": 0.73, # conflict
+            "S": 1.02,
+            "Se": 1.16,
+            "Te": 1.35,
+            # VII A
+            "F": 0.71,
+            "Cl": 0.99,
+            "Br": 1.14,
+            "I": 1.33,
+        }
+        if is_ionic:
+            radii_table = ionic_radii_table
+        else:
+            radii_table = atomic_radii_table
+
+        output_list = {}
+        for e in self.elements:
+            if e in radii_table:
+                radii.append(radii_table[e] + pi_bond)
+            else:
+                radii.append(Element(e).atomic_radius + pi_bond)
+            if e not in output_list:
+                output_list[e] = radii[-1]
+        # show which radius is being used
+        for k in output_list:
+            print("element:{} radius:{}".format(k, output_list[k]))
         return radii
 
     # def _get_radius(self, atom_index, pi_bond):
