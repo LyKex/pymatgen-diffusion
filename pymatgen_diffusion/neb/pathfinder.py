@@ -291,15 +291,7 @@ class IDPPSolver:
 
             if len(indices) == 0:
                 raise ValueError("The given species are not in the system!")
-        # DEBUG
-        # res = []
-        # # force = []
-        # d_3_4 = []
-        # d_3_10 = []
-        # d_3_9 = []
-        # d_26 = []
-        # Iterative minimization
-        # neighbor_26 = []
+
         for n in tqdm(range(maxiter)):
             # Get the sets of objective functions, true and total force
             # matrices.
@@ -313,6 +305,9 @@ class IDPPSolver:
                 np.abs(disp_mat) > max_disp, np.sign(disp_mat) * max_disp, disp_mat
             )
             coords[1 : (self.nimages + 1), indices] += disp_mat
+
+            # DEBUG
+            # print(">>>step: {} >>>\n total: {}\ndisp: {}".format(n, tot_forces, disp_mat))
 
             max_force = np.abs(tot_forces[:, indices, :]).max()
             tot_res = np.sum(np.abs(old_funcs - funcs))
@@ -396,7 +391,7 @@ class IDPPSolver:
         Calculate the set of objective functions as well as their gradients,
         i.e. "effective true forces"
 
-        x: coordinates of each images
+        x: cartesian coordinates of each images
 
         return: funcs, true_forces [ni][nn]
         """
@@ -406,14 +401,6 @@ class IDPPSolver:
         natoms = trans.shape[1]
         weights = self.weights
         target_dists = self.target_dists
-        # target_dists, neighbor_26_tmep = self._screen(self.target_dists, x)
-
-        # # DEBUG
-        # for ni in range(self.nimages):
-        #     probe1.append(target_dists[ni][2][3])
-        #     probe2.append(target_dists[ni][2][8])
-        #     probe3.append(target_dists[ni][2][9])
-        #     probe4.append(target_dists[ni][25])
 
         for ni in range(len(x) - 2):
             vec = [x[ni + 1, i] - x[ni + 1] - trans[ni, i] for i in range(natoms)]
@@ -648,7 +635,7 @@ class IDPPSolver:
             if disp[i] > threshold:
                 NEB_atoms.append(i)
         # debug
-        print("\nNEB atoms list\nIndex | Element | Displacement")
+        # print("\nNEB atoms list\nIndex | Element | Displacement")
         for n in NEB_atoms:
             print("{}\t{}\t{}".format(n, self.elements[n], disp[n]))
         return NEB_atoms
@@ -662,10 +649,10 @@ class IDPPSolver:
         dump_total=True,
         moving_atoms=None,
         step_size=0.05,
-        max_disp=0.1,
+        max_disp=0.05,
         max_iter=200,
         gtol=1e-3,
-        step_update_method="decay",
+        step_update_method=None,
         base_step=0.01,
         max_step=0.05,
         spring_const=5.0,
@@ -679,6 +666,7 @@ class IDPPSolver:
         Conduct clash removal process on given path with NEB.
 
         Args:
+        path [ni+2, na, 3]: initial fractional coords path for clash removal
         maxiter (int): maximum iteration path (list of Structures): initial path for
         clash removal. The first and last structures coorepond to the initial and final
         states.
@@ -690,7 +678,7 @@ class IDPPSolver:
         # Construct cartesian coords for path
         # minimization is updated on path_coords not images
 
-        # from path generate cart_coords
+        # from given path generate cart_coords
         latt = self.structures[0].lattice
         initial_images = path[1:-1]
         image_coords = []
@@ -704,7 +692,7 @@ class IDPPSolver:
         path_coords = np.array(path_coords)
 
         # if moving_atoms is [], then all atoms are allowed to move
-        if moving_atoms:
+        if moving_atoms is None:
             moving_atoms = list(range(len(self.structures[0])))
 
         # find NEB atoms
@@ -712,6 +700,10 @@ class IDPPSolver:
         if not NEB_atoms:
             NEB_atoms = range(self.natoms)
             warnings.warn("No NEB atoms detected. All atoms are considered NEB atoms.")
+
+        # initialize for IDPP force calculation
+        # old_funcs = np.zeros((self.nimages,), dtype=np.float64)
+        # idpp_structures = [self.structures[0]]
 
         # initialize for main loop
         max_forces = [float("inf")]
@@ -721,12 +713,15 @@ class IDPPSolver:
             clash_forces = self._get_clash_forces_and_energy(
                 image_coords=path_coords[1:-1], NEB_atoms=NEB_atoms, **kwargs
             )
-            # total force = clash force (perpendicular to tangent)
-            #               + spring force (along tangent)
+
+            # true force = IDPP force + CR force
+            # total force = true force (perpendicular to tangent)
+            #             + spring force (along tangent)
+            idpp_funcs, idpp_forces = self._get_funcs_and_forces(path_coords)
+            true_forces = idpp_forces + clash_forces
             # _get_total_forces requires all coords including initial and final states
-            # but it will not modify the coords
             total_forces = self._get_total_forces(
-                path_coords, clash_forces, spring_const
+                path_coords, true_forces, spring_const
             )
 
             # output dump file for each imaegs
@@ -738,7 +733,7 @@ class IDPPSolver:
                         ) as f:
                             f.write(
                                 self.lammps_dump_str(
-                                    path_coords[i + 1], clash_forces[i], n
+                                    path_coords[i + 1], true_forces[i], n
                                 )
                             )
                     except Exception:
@@ -766,6 +761,9 @@ class IDPPSolver:
             )
             # update images_coords
             path_coords[1:-1, moving_atoms] += disp_mat
+
+            # DEBUG
+            # print(">>>step: {} >>>\n total: {}\ndisp: {}".format(n, total_forces, disp_mat))
 
             # calculate max force and store
             max_forces.append(np.abs(total_forces[:, moving_atoms, :]).max())
@@ -934,14 +932,13 @@ class IDPPSolver:
         steric_tol (float): atoms too close together will be regarded as same atoms
 
         Returns:
-            Clash_forces[ni][nn]
+            Clash_forces[ni, nn, 3]
         """
         # debug
         # print(k_steric, k_bonded, repul_tol, max_bond_tol)
 
-        # get lattice abc
+        # get lattice
         lattice = self.structures[0].lattice
-        latt_abc = lattice.abc
         # get frac_coords of current image_coords
         frac_image_coords = []
         for ni in range(self.nimages):
@@ -1104,10 +1101,6 @@ class IDPPSolver:
         max_bond_length is not manually set, radii_list should be used to
         automaticallty generate those parameters according to atomic radius.
         """
-        radii = []
-        # use initial state (image 0) as the reference for atom index
-        initial = self.structures[0]
-
         # radii_table will overide radii of pymatgen element atomic_radius.
         # The value for Alkali metals (Li, Na, K) is measured on models of ions
         # adsorped on graphene, therefore it has accounted for the pi_bond radius.
@@ -1115,7 +1108,7 @@ class IDPPSolver:
         atomic_radii_table = {
             "C": 0.7,
             "N": 0.8,
-            # "H": 1,  # for testing purpose only
+            "H": 1,  # for testing purpose only
             "Al": 1.43,
             "Ni": 1.25,
             "Cu": 1.278,
@@ -1160,6 +1153,7 @@ class IDPPSolver:
         else:
             radii_table = atomic_radii_table
 
+        radii = []
         output_list = {}
         for e in self.elements:
             if e in radii_table:
