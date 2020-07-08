@@ -1,0 +1,225 @@
+#!/home/liugy/miniconda3/envs/my_pymatgen/bin/python
+from pymatgen.core import Structure
+import configparser
+import argparse
+import time
+import os
+import io
+import cProfile
+import pstats
+from pstats import SortKey
+
+# import pymatgen_diffusion from path
+import sys
+import importlib.util
+
+module_name = "pathfinder"
+spec = importlib.util.spec_from_file_location(
+    module_name,
+    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion"
+    + "/pymatgen_diffusion/neb/pathfinder.py",
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = module
+spec.loader.exec_module(module)
+from pathfinder import IDPPSolver
+
+module_name = "rmsd"
+spec = importlib.util.spec_from_file_location(
+    module_name,
+    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion/rmsd.py")
+module = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = module
+spec.loader.exec_module(module)
+from rmsd import rmsd_pbc
+
+# read config
+parser = argparse.ArgumentParser(description="Generate initial guess for NEB.")
+parser.add_argument(
+    "-i",
+    "--input",
+    nargs=1,
+    help="location of configuration file")
+parser.add_argument("-o", "--output", nargs=1, help="output directory")
+args = parser.parse_args()
+config = configparser.ConfigParser()
+config_file = args.input[0]
+try:
+    config.read(config_file)
+except Exception:
+    print("failed to read config file")
+    sys.exit(1)
+save_dir = args.output[0]
+if not os.path.exists(save_dir):
+    print("output directory does not exit")
+
+# default
+default_conf = config["Default"]
+initial_state = default_conf.get("initial-state", "CONTCAR-ini")
+final_state = default_conf.get("final-state", "CONTCAR-fin")
+nimages = default_conf.getint("images", 3)
+species = default_conf.get("NEB-species", None)
+if species:
+    species = species.split(",")
+
+# IDPP parameters
+IDPP_config = config["IDPP"]
+IDPP_iter = IDPP_config.getint("max-iteration")
+IDPP_ftol = IDPP_config.getfloat("force-tolerance", 1e-5)
+IDPP_gtol = IDPP_config.getfloat("energy-tolerance", 1e-3)
+
+# clash removal parameters
+CR_config = config["Clash Removal"]
+CR_iter = CR_config.getint("max-iteration")
+dump_dir = CR_config.get("dump-directory", None)
+if not dump_dir:
+    dump_dir = save_dir
+pi_bond = CR_config.getfloat("pi-bond", 0.0)
+optimization_method = CR_config.get(
+    "optimization", "None"
+)  # available_method: 'decay', 'expo', 'triangular'
+dump_CR = CR_config.getboolean("output-CR-force", True)
+dump_total = CR_config.getboolean("output-total-force", True)
+CR_step_size = CR_config.getfloat("step-size", 0.05)
+bonding_K = CR_config.getfloat("bonding-K", 0.05)
+steric_K = CR_config.getfloat("steric-K", 5.0)
+max_bond_tol = CR_config.getfloat("bond-length-tolerance", 0.2)
+repul_tol = CR_config.getfloat("repulsive-tolerance", 0.0)
+base_step = CR_config.getfloat("base-step-size", 0.01)
+max_step = CR_config.getfloat("max-step-size", 0.05)
+r_threshold = CR_config.getfloat("neighbor-radius", 5.0)
+is_CR_NEB = CR_config.getboolean("use-NEB", True)
+NEB_threshold = CR_config.getfloat("NEB_threshold", 2.0)
+is_ionic = CR_config.getboolean('is-ion', False)
+# TODO is_log = false # turn on logging
+
+# Rerun parameters
+rr_config = config["Rerun"]
+rr_iter = rr_config.getint("max-iteration")
+rr_ftol = rr_config.getfloat("energy-tolerance", 1e-5)
+rr_gtol = rr_config.getfloat("force-tolerance", 1e-3)
+
+ini = Structure.from_file(initial_state)
+fin = Structure.from_file(final_state)
+
+
+# profiler
+def profile(fnc):
+
+    def inner(*args, **kwargs):
+
+        pr = cProfile.Profile()
+        pr.enable()
+
+        val = fnc(*args, **kwargs)
+
+        pr.disable()
+        s = io.StringIO()
+        sortby = SortKey.CUMULATIVE
+        ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+        ps.print_stats()
+        print(s.getvalue())
+        return val
+
+    return inner
+
+
+# initialize IDPPSolver
+obj = IDPPSolver.from_endpoints(
+    endpoints=[ini, fin], nimages=nimages, sort_tol=0,
+)
+# find IDPP path
+if IDPP_iter:
+    idpp_path = obj.run(
+        maxiter=IDPP_iter, tol=IDPP_ftol, gtol=IDPP_gtol, species=species
+    )
+    path_for_CR = idpp_path
+else:
+    path_for_CR = obj.structures
+
+# Clash Removal
+if CR_iter and not is_CR_NEB:
+    start_time = time.time()
+    (
+        clash_removed_path,
+        # attr_force_log,
+        # attr_index_log,
+        # rpl_force_log,
+        # rpl_index_log,
+        # disp_log,
+    ) = obj.clash_removal(
+        path_for_CR,
+        step_size=CR_step_size,
+        max_iter=CR_iter,
+        k_bonded=bonding_K,
+        k_steric=steric_K,
+        base_step=base_step,
+        max_step=max_step,
+        step_update_method=optimization_method,
+        max_bond_tol=max_bond_tol,
+        r_threshold=r_threshold,
+        is_ionic=is_ionic,
+    )
+    print("--- %.02d seconds ---" % (time.time() - start_time))
+
+
+# Clash Removal NEB
+@profile
+def run_CR_NEB(*args, **kwargs):
+    return obj.clash_removal_NEB(*args, **kwargs)
+
+
+if CR_iter and is_CR_NEB:
+    print("clash removal with NEB")
+    clash_removed_path = run_CR_NEB(
+        path=path_for_CR,
+        maxiter=CR_iter,
+        dump_dir=dump_dir,
+        dump_CR=dump_CR,
+        dump_total=dump_total,
+        step_size=CR_step_size,
+        k_bonded=bonding_K,
+        k_steric=steric_K,
+        base_step=base_step,
+        max_step=max_step,
+        max_bond_tol=max_bond_tol,
+        repul_tol=repul_tol,
+        NEB_threshold=NEB_threshold,
+        r_threshold=r_threshold,
+        is_ionic=is_ionic,
+    )
+# rerun
+if rr_iter:
+    print("rerun with clash removal path")
+    obj_rerun = IDPPSolver(clash_removed_path)
+    rerun_path = obj_rerun.rerun(maxiter=rr_iter, tol=rr_ftol, gtol=rr_gtol)
+
+# output
+if rr_iter:
+    result = rerun_path
+    print("Output rerun path.\n")
+elif CR_iter:
+    result = clash_removed_path
+    print("Output Clash Removal path.\n")
+elif IDPP_iter:
+    result = idpp_path
+    print("Output IDPP path.\n")
+else:
+    result = obj.structures
+    print("Output linear interpolation path.\n")
+
+print("result path length: {}\n".format(len(result)))
+
+if not os.path.exists(save_dir):
+    os.mkdir(save_dir)
+for n, struct in enumerate(result):
+    struct.to(fmt="poscar", filename="{}/POSCAR_{:02d}".format(save_dir, n))
+
+
+# check RMSD
+for n in range(len(result) - 1):
+    structure_1_path = "{}/POSCAR_{:02d}".format(save_dir, n)
+    structure_2_path = "{}/POSCAR_{:02d}".format(save_dir, n+1)
+    print("rmsd {} <-> {}: {}".format(n, n + 1,
+                                      rmsd_pbc(structure_1_path,
+                                               structure_2_path)))

@@ -3,9 +3,10 @@
 # Distributed under the terms of the BSD License.
 
 import warnings
-import itertools
-from typing import List
 import os
+import time
+from typing import List
+import itertools
 from operator import attrgetter
 
 import numpy as np
@@ -19,7 +20,7 @@ from pymatgen.core.lattice import get_points_in_spheres
 from pymatgen.util.coord import all_distances, pbc_diff
 from pymatgen.io.lammps.data import LammpsBox
 
-__author__ = "Iek-Heng Chu, Guoyuan Liu"
+__author__ = "Iek-Heng Chu"
 __version__ = "1.0"
 __date__ = "March 14, 2017"
 
@@ -947,24 +948,22 @@ class IDPPSolver:
         # find steric hindered atoms
         steric_hindered = []
         for ni in range(self.nimages):
+            #     # get frac_coord diff considering pbc
+            #     diff = pbc_diff(frac_image_coords[ni][i], frac_image_coords[ni][j])
+            #     # convert back to cart coords
+            #     dist = np.linalg.norm(lattice.get_cartesian_coords(diff))
+            #     if (
+            #         dist < self._get_steric_threshold(i, j, repul_tol)
+            #         and dist > steric_tol
+            #     ):
+            #         steric_hindered.append([ni, i, j, dist])
+            # calculate cartesian dist of each atom pairs
+            diff = lattice.get_all_distances(
+                frac_image_coords[ni], frac_image_coords[ni])
             for i, j in itertools.combinations(range(self.natoms), 2):
-                # get frac_coord diff considering pbc
-                diff = pbc_diff(frac_image_coords[ni][i], frac_image_coords[ni][j])
-                # convert back to cart coords
-                dist = np.linalg.norm(lattice.get_cartesian_coords(diff))
-                if (
-                    dist < self._get_steric_threshold(i, j, repul_tol)
-                    and dist > steric_tol
-                ):
-                    steric_hindered.append([ni, i, j, dist])
-        # # DEBUG
-        # with open(
-        #         'C:\\ComputMatSci\\IDPP_test\\pymatgen\\steric_hinderance.txt',
-        #         'a') as f:
-        #     f.write('>>>\n')
-        #     for n in steric_hindered:
-        #         f.write('image: %d clash atoms: %03d %03d\n'
-        #                 % (n[0]+1, n[1]+1, n[2]+1))
+                if (diff[i][j] < self._get_steric_threshold(i, j, repul_tol)
+                        and diff[i][j] > steric_tol):
+                    steric_hindered.append([ni, i, j, diff[i][j]])
 
         # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
