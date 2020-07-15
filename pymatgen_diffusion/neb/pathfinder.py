@@ -16,7 +16,8 @@ from pymatgen.core import Structure, PeriodicSite
 from pymatgen.core.structure import PeriodicNeighbor
 from pymatgen.core.periodic_table import get_el_sp, Element
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from pymatgen.core.lattice import get_points_in_spheres
+# from pymatgen.core.lattice import get_points_in_sphere
+from pymatgen.core import Lattice
 from pymatgen.util.coord import all_distances, pbc_diff
 from pymatgen.io.lammps.data import LammpsBox
 
@@ -40,7 +41,7 @@ class IDPPSolver:
 
     """
 
-    def __init__(self, structures ):
+    def __init__(self, structures):
         """
         Initialization.
 
@@ -637,6 +638,7 @@ class IDPPSolver:
                 NEB_atoms.append(i)
         # debug
         # print("\nNEB atoms list\nIndex | Element | Displacement")
+        print("NEB atoms list:")
         for n in NEB_atoms:
             print("{}\t{}\t{}".format(n, self.elements[n], disp[n]))
         return NEB_atoms
@@ -967,7 +969,7 @@ class IDPPSolver:
 
         # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
-            image_coords, NEB_atoms, **kwargs
+            frac_image_coords, image_coords, NEB_atoms, **kwargs
         )
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
@@ -1019,9 +1021,9 @@ class IDPPSolver:
 
     def _find_bonded_neighbors(
         self,
-        cart_coords,
-        NEB_atoms,
-        moving_sites=None,
+        frac_coords,
+        image_coords,
+        NEB_atoms: List,
         r_threshold: float = 5.0,
         numerical_tol: float = 1e-8,
         max_bond_tol=0.2,
@@ -1033,9 +1035,9 @@ class IDPPSolver:
         pymatgen.core.lattice.get_points_in_spheres().
 
         Args:
-            cart_coords ([ni,na,3]): Cartesian coords of current optimizing
+            frac_coords ([ni,na,3]): fractional coords of current optimizing
                 structure.
-            moving_sites: list of index of atoms allowed to move
+            moving_sites: list of indices of manually selected NEB atoms
             r (float): radius of the search range.
 
         Return:
@@ -1043,34 +1045,44 @@ class IDPPSolver:
              BondedNeighbor 2...]
         """
         lattice = self.structures[0].lattice
-        if moving_sites is None:
-            moving_coords = cart_coords.copy()
-        else:
-            moving_coords = cart_coords[:, moving_sites, :]
 
-        # find all neighbors and return those should be bounded
+        # add moving sites to NEB_atoms to allow manual selection
+        NEB_atoms = set(NEB_atoms)
+
         cases = []
         for ni in range(self.nimages):
-            # get_points_in_spheres return
-            # List[List[Tuple[coords, distance, index, image]]]
-            points_neighbors = get_points_in_spheres(
-                cart_coords[ni],
-                moving_coords[ni],
-                r=r_threshold,
-                pbc=True,
-                numerical_tol=numerical_tol,
-                lattice=lattice,
-            )
-            # for NEB atoms, check if its neighbors need bonding
-            for i in range(self.natoms):
-                if i in NEB_atoms:
-                    c = [ni, i]
-                    for j in range(len(points_neighbors[i])):
-                        _, d, index, _ = points_neighbors[i][j]
-                        # check if the neighbor is far enough
-                        if d > self._get_max_bond_length(i, index, max_bond_tol):
-                            c.append(BondedNeighbor(i, index, d))
-                    cases.append(c)
+            clash_atoms = set()
+            case = []
+            # find clash atoms around NEB atoms
+            for n in NEB_atoms:
+                # get_points_in_sphere return
+                # [fcoord, dist, indices, supercell_image]
+                _, _, temp_atoms, _ = lattice.get_points_in_sphere(
+                    frac_coords[ni],
+                    image_coords[ni][n],
+                    r_threshold,
+                    zip_results=False,
+                )
+                # debug
+                print("frac_coords:\n {}\n center atom:\n {}".format(frac_coords[ni], frac_coords[ni][n]))
+                print("temp_atoms: {}".format(temp_atoms))
+                clash_atoms = clash_atoms | set(temp_atoms)
+            # for NEB atoms and clash atoms, check if their neighbors need bonding
+            atoms_set = NEB_atoms | clash_atoms
+            print("final atoms set for image {}: {}\n".format(ni, atoms_set))
+            for i in atoms_set:
+                atom_neighbors = lattice.get_points_in_sphere(
+                    frac_coords[ni],
+                    image_coords[ni][i],
+                    r_threshold,
+                    zip_results=True,
+                )
+                for _, d, index, _ in atom_neighbors:
+                    # check if the neighbor is far enough
+                    print("atom: {} neighbor: {} distance: {}".format(i, index, d))
+                    if d > self._get_max_bond_length(i, index, max_bond_tol):
+                        case.append(BondedNeighbor(i, index, d))
+            cases.append(case)
         # debug
         # print(cases)
         return cases
@@ -1128,17 +1140,16 @@ class IDPPSolver:
             # III A
             "B": 0.41,
             "Al": 0.68,
-            "Ga": 1.3,
-            # "Ga": 0.76, # conflict
+            "Ga": 1.25,
             "In": 0.94,
             "Ti": 0.5,
             # V A
-            "Bi": 1.6,
-            "As": 1.15,
+            "Bi": 1.5,
+            "As": 1.2,
             # VI A
             "O": 1.44,
             # "O": 0.73, # conflict
-            "S": 1.02,
+            "S": 1.8,
             "Se": 1.16,
             "Te": 1.35,
             # VII A
@@ -1146,6 +1157,8 @@ class IDPPSolver:
             "Cl": 0.99,
             "Br": 1.14,
             "I": 1.33,
+
+            "W": 0.6,
         }
         if is_ionic:
             radii_table = ionic_radii_table
