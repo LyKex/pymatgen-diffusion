@@ -967,10 +967,6 @@ class IDPPSolver:
                         and diff[i][j] > steric_tol):
                     steric_hindered.append([ni, i, j, diff[i][j]])
 
-        # find bonded neighbors
-        bonded_neighbors = self._find_bonded_neighbors(
-            frac_image_coords, image_coords, NEB_atoms, **kwargs
-        )
         # calculate repulsive forces
         repulsive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in steric_hindered:
@@ -990,10 +986,14 @@ class IDPPSolver:
         # max_rpl_force = np.amax(scalar_rpl_force, axis=1)
 
         # calculate attractive forces
+        # find bonded neighbors
+        bonded_neighbors = self._find_bonded_neighbors(
+            frac_image_coords, image_coords, NEB_atoms, **kwargs
+        )
         attractive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
         for case in bonded_neighbors:
             ni, i, *neighbors = case
-            # the convention here is that atom i is getting "pulled" by its neighbors
+            # atom i is attracted to its neighbor
             for nei in neighbors:
                 coord_bonded = image_coords[ni][i]
                 coord_pulling = image_coords[ni][nei.n_index]
@@ -1024,7 +1024,7 @@ class IDPPSolver:
         frac_coords,
         image_coords,
         NEB_atoms: List,
-        r_threshold: float = 5.0,
+        r_threshold: float = 3.0,
         numerical_tol: float = 1e-8,
         max_bond_tol=0.2,
     ):
@@ -1052,7 +1052,6 @@ class IDPPSolver:
         cases = []
         for ni in range(self.nimages):
             clash_atoms = set()
-            case = []
             # find clash atoms around NEB atoms
             for n in NEB_atoms:
                 # get_points_in_sphere return
@@ -1064,13 +1063,14 @@ class IDPPSolver:
                     zip_results=False,
                 )
                 # debug
-                print("frac_coords:\n {}\n center atom:\n {}".format(frac_coords[ni], frac_coords[ni][n]))
-                print("temp_atoms: {}".format(temp_atoms))
+                # print("frac_coords:\n {}\n center atom:\n {}".format(frac_coords[ni], frac_coords[ni][n]))
+                # print("temp_atoms: {}".format(temp_atoms))
                 clash_atoms = clash_atoms | set(temp_atoms)
             # for NEB atoms and clash atoms, check if their neighbors need bonding
             atoms_set = NEB_atoms | clash_atoms
-            print("final atoms set for image {}: {}\n".format(ni, atoms_set))
+            # print("final atoms set for image {}: {}\n".format(ni, atoms_set))
             for i in atoms_set:
+                case = [ni, i]
                 atom_neighbors = lattice.get_points_in_sphere(
                     frac_coords[ni],
                     image_coords[ni][i],
@@ -1079,8 +1079,9 @@ class IDPPSolver:
                 )
                 for _, d, index, _ in atom_neighbors:
                     # check if the neighbor is far enough
-                    print("atom: {} neighbor: {} distance: {}".format(i, index, d))
+                    # print("atom: {} neighbor: {} distance: {}".format(i, index, d))
                     if d > self._get_max_bond_length(i, index, max_bond_tol):
+                        # atom i is attracted to atom index
                         case.append(BondedNeighbor(i, index, d))
             cases.append(case)
         # debug
@@ -1208,6 +1209,11 @@ class BondedNeighbor:
     """
 
     def __init__(self, index, n_index, nn_distance):
+        """
+        index: index of the atom in question
+        n_index: the index of neighbor atom to the atom in question
+        nn_distance: the distance between two atoms 
+        """
         self.index = index
         self.n_index = n_index
         self.nn_distance = nn_distance
