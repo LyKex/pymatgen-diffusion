@@ -647,6 +647,7 @@ class IDPPSolver:
         self,
         path,
         maxiter,
+        use_idpp,
         dump_dir,
         dump_CR=True,
         dump_total=True,
@@ -720,8 +721,22 @@ class IDPPSolver:
             # true force = IDPP force + CR force
             # total force = true force (perpendicular to tangent)
             #             + spring force (along tangent)
-            idpp_funcs, idpp_forces = self._get_funcs_and_forces(path_coords)
-            true_forces = idpp_forces + clash_forces
+            if use_idpp:
+                _, idpp_forces = self._get_funcs_and_forces(path_coords)
+                # normalize CR_force
+                conjugated_cr = np.zeros(np.shape(clash_forces))
+                idpp_forces_norm = np.linalg.norm(idpp_forces, axis=2)
+                cr_forces_norm = np.linalg.norm(clash_forces, axis=2)
+                for ni in range(self.nimages):
+                    for na in range(self.natoms):
+                        if not cr_forces_norm[ni][na] == 0:
+                            conjugated_cr[ni][na] = (
+                                (clash_forces[ni][na] / cr_forces_norm[ni][na])
+                                * idpp_forces_norm[ni][na])
+                true_forces = idpp_forces + conjugated_cr
+            else:
+                true_forces = clash_forces
+
             # _get_total_forces requires all coords including initial and final states
             total_forces = self._get_total_forces(
                 path_coords, true_forces, spring_const
@@ -918,9 +933,9 @@ class IDPPSolver:
         max_bond_tol=0.2,
         # original_distances=None,
         k_steric=5.0,
+        k_bonded=0.05,
         repul_tol=0.0,
         steric_tol=1e-8,
-        k_bonded=0.05,
         elastic_limit=0.2,
         **kwargs,
     ):
@@ -1010,8 +1025,7 @@ class IDPPSolver:
                 attractive_forces[ni][i] += f
                 # DEBUG monitor attractive forces
                 # print(
-                #     "attractive force applied on image: {} atom: {} \n"
-                #     "direction: {} from {}\n at {} distance {}".format(
+                #     "image: {} on atom: {} direction: {} from {} at {} distance {}".format(
                 #         ni, i, direction, nei.n_index, image_coords[ni][nei.n_index], nei.nn_distance
                 #     )
                 # )

@@ -67,6 +67,7 @@ IDPP_gtol = IDPP_config.getfloat("energy-tolerance", 1e-3)
 # clash removal parameters
 CR_config = config["Clash Removal"]
 CR_iter = CR_config.getint("max-iteration")
+use_idpp = CR_config.getboolean("use-IDPP", True)
 dump_dir = CR_config.get("dump-directory", None)
 if not dump_dir:
     dump_dir = save_dir
@@ -77,8 +78,8 @@ optimization_method = CR_config.get(
 dump_CR = CR_config.getboolean("output-CR-force", True)
 dump_total = CR_config.getboolean("output-total-force", True)
 CR_step_size = CR_config.getfloat("step-size", 0.05)
-bonding_K = CR_config.getfloat("bonding-K", 0.05)
-steric_K = CR_config.getfloat("steric-K", 5.0)
+k_bonded = CR_config.getfloat("bonding-K", 0.05)
+k_steric = CR_config.getfloat("steric-K", 5.0)
 max_bond_tol = CR_config.getfloat("bond-length-tolerance", 0.2)
 repul_tol = CR_config.getfloat("repulsive-tolerance", 0.0)
 base_step = CR_config.getfloat("base-step-size", 0.01)
@@ -125,8 +126,8 @@ if CR_iter and not is_CR_NEB:
         path_for_CR,
         step_size=CR_step_size,
         max_iter=CR_iter,
-        k_bonded=bonding_K,
-        k_steric=steric_K,
+        k_bonded=k_bonded,
+        k_steric=k_steric,
         base_step=base_step,
         max_step=max_step,
         step_update_method=optimization_method,
@@ -142,12 +143,13 @@ if CR_iter and is_CR_NEB:
     clash_removed_path = obj.clash_removal_NEB(
         path=path_for_CR,
         maxiter=CR_iter,
+        use_idpp=use_idpp,
         dump_dir=dump_dir,
         dump_CR=dump_CR,
         dump_total=dump_total,
         step_size=CR_step_size,
-        k_bonded=bonding_K,
-        k_steric=steric_K,
+        k_bonded=k_bonded,
+        k_steric=k_steric,
         base_step=base_step,
         max_step=max_step,
         max_bond_tol=max_bond_tol,
