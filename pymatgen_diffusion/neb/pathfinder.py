@@ -991,36 +991,37 @@ class IDPPSolver:
         # max_rpl_force = np.amax(scalar_rpl_force, axis=1)
 
         # calculate attractive forces
-        # find bonded neighbors
         bonded_neighbors = self._find_bonded_neighbors(
             frac_image_coords, image_coords, NEB_atoms, **kwargs
         )
         attractive_forces = np.zeros((self.nimages, self.natoms, 3), dtype=np.float64)
-        for case in bonded_neighbors:
-            ni, i, *neighbors = case
-            # atom i is attracted to its neighbor
-            for nei in neighbors:
-                coord_bonded = image_coords[ni][i]
-                coord_pulling = image_coords[ni][nei.n_index]
-                # get direction (towards pulling atoms) considering PBC
-                direction = self.get_direction_pbc(coord_pulling, coord_bonded)
+        for nei in bonded_neighbors:
+            # each element in bonded_neighbors is a BondedNeighbor object
+            ni = nei.image
+            i = nei.index
+            n_i = nei.n_index
+            d = nei.nn_distance
+            coord_bonded = image_coords[ni][i]
+            coord_pulling = image_coords[ni][n_i]
 
-                # get displacement and calculate force
-                delta_d = nei.nn_distance - self._get_max_bond_length(
-                    i, nei.index, max_bond_tol=max_bond_tol
-                )
-                f = (k_bonded * delta_d ** 2) * direction
+            # get direction (towards pulling atoms) considering PBC
+            direction = self.get_direction_pbc(coord_pulling, coord_bonded)
 
-                # apply force on atoms
-                attractive_forces[ni][i] += f
-                # DEBUG monitor attractive forces
-                # print(
-                #     "image: {} on atom: {} direction: {} from {} at {} distance {}".format(
-                #         ni, i, direction, nei.n_index, image_coords[ni][nei.n_index], nei.nn_distance
-                #     )
-                # )
+            # get displacement and calculate force
+            delta_d = d - self._get_max_bond_length(
+                i, n_i, max_bond_tol=max_bond_tol
+            )
+            f = (k_bonded * delta_d ** 2) * direction
+
+            # apply force on atoms
+            attractive_forces[ni][i] += f
+            # DEBUG monitor attractive forces
+            # print(
+            #     "image: {} on atom: {} direction: {} from {} at {} distance {}".format(
+            #         ni, i, direction, nei.n_index, image_coords[ni][nei.n_index], nei.nn_distance
+            #     )
+            # )
         clash_forces = repulsive_forces + attractive_forces
-
         return clash_forces
 
     def _find_bonded_neighbors(
@@ -1036,7 +1037,7 @@ class IDPPSolver:
         Alls atoms are assumed to be connected. For any atoms, if its closest neighbor
         is further than the corresponding max_bond_length, then all its neighbors will
         pull the atom. The neighbor atom pairs are searched within a radius using
-        pymatgen.core.lattice.get_points_in_spheres().
+        pymatgen.core.lattice.get_points_in_sphere() which will try to use cthyon code.
 
         Args:
             frac_coords ([ni,na,3]): fractional coords of current optimizing
@@ -1048,6 +1049,7 @@ class IDPPSolver:
             cases (2D list): [image number, atom index, BondedNeighbor 1,
              BondedNeighbor 2...]
         """
+
         lattice = self.structures[0].lattice
 
         # add moving sites to NEB_atoms to allow manual selection
@@ -1066,15 +1068,11 @@ class IDPPSolver:
                     r_threshold,
                     zip_results=False,
                 )
-                # debug
-                # print("frac_coords:\n {}\n center atom:\n {}".format(frac_coords[ni], frac_coords[ni][n]))
-                # print("temp_atoms: {}".format(temp_atoms))
                 clash_atoms = clash_atoms | set(temp_atoms)
             # for NEB atoms and clash atoms, check if their neighbors need bonding
             atoms_set = NEB_atoms | clash_atoms
-            print("final atoms set for image {}: {}\n".format(ni, atoms_set))
+            # print("final atoms set for image {}: {}".format(ni+1, atoms_set))
             for i in atoms_set:
-                case = [ni, i]
                 atom_neighbors = lattice.get_points_in_sphere(
                     frac_coords[ni], image_coords[ni][i], r_threshold, zip_results=True,
                 )
@@ -1083,10 +1081,9 @@ class IDPPSolver:
                     # print("atom: {} neighbor: {} distance: {}".format(i, index, d))
                     if d > self._get_max_bond_length(i, index, max_bond_tol):
                         # atom i is attracted to atom index
-                        case.append(BondedNeighbor(i, index, d))
-            cases.append(case)
+                        cases.append(BondedNeighbor(i, index, d, ni))
         # debug
-        # print(cases)
+        # print(cases,"\n")
         return cases
 
     def get_direction_pbc(self, coords1, coords2):
@@ -1208,19 +1205,21 @@ class BondedNeighbor:
     container for bonded neighbors used during calculation of bonded force
     """
 
-    def __init__(self, index, n_index, nn_distance):
+    def __init__(self, index, n_index, nn_distance, image):
         """
         index: index of the atom in question
         n_index: the index of neighbor atom to the atom in question
         nn_distance: the distance between two atoms
+        image: the number of image
         """
         self.index = index
         self.n_index = n_index
         self.nn_distance = nn_distance
+        self.image = image
 
     def __repr__(self):
-        return ("atom index: {} neighbor index:{} " "neighbor distance: {}").format(
-            self.index, self.n_index, self.nn_distance
+        return ("atom index: {} neighbor index:{} " "neighbor distance: {} in image {}\n").format(
+            self.index, self.n_index, self.nn_distance, self.image
         )
 
 
