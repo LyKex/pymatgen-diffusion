@@ -75,7 +75,8 @@ pi_bond = CR_config.getfloat("pi-bond", 0.0)
 optimization_method = CR_config.get(
     "optimization", "None"
 )  # available_method: 'decay', 'expo', 'triangular'
-dump_CR = CR_config.getboolean("output-CR-force", True)
+dump_cr = CR_config.getboolean("output-CR-force", True)
+dump_idpp = CR_config.getboolean("output-IDPP-force", True)
 dump_total = CR_config.getboolean("output-total-force", True)
 CR_step_size = CR_config.getfloat("step-size", 0.05)
 k_bonded = CR_config.getfloat("bonding-K", 0.05)
@@ -145,7 +146,8 @@ if CR_iter and is_CR_NEB:
         maxiter=CR_iter,
         use_idpp=use_idpp,
         dump_dir=dump_dir,
-        dump_CR=dump_CR,
+        dump_cr=dump_cr,
+        dump_idpp=dump_idpp,
         dump_total=dump_total,
         step_size=CR_step_size,
         k_bonded=k_bonded,

@@ -4,21 +4,18 @@
 
 import warnings
 import os
-import time
 from typing import List
 import itertools
-from operator import attrgetter
 
 import numpy as np
 from tqdm import tqdm
 
 from pymatgen.core import Structure, PeriodicSite
-from pymatgen.core.structure import PeriodicNeighbor
 from pymatgen.core.periodic_table import get_el_sp, Element
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
 # from pymatgen.core.lattice import get_points_in_sphere
-from pymatgen.core import Lattice
-from pymatgen.util.coord import all_distances, pbc_diff
+from pymatgen.util.coord import pbc_diff
 from pymatgen.io.lammps.data import LammpsBox
 
 __author__ = "Iek-Heng Chu"
@@ -631,8 +628,9 @@ class IDPPSolver:
         initial = self.structures[0].frac_coords
         final = self.structures[-1].frac_coords
         frac_diff = pbc_diff(initial, final)
-        disp = np.linalg.norm(self.structures[0].lattice.get_cartesian_coords(frac_diff),
-                              axis=1)
+        disp = np.linalg.norm(
+            self.structures[0].lattice.get_cartesian_coords(frac_diff), axis=1
+        )
         for i in range(self.natoms):
             if disp[i] > threshold:
                 NEB_atoms.append(i)
@@ -649,7 +647,8 @@ class IDPPSolver:
         maxiter,
         use_idpp,
         dump_dir,
-        dump_CR=True,
+        dump_cr=True,
+        dump_idpp=True,
         dump_total=True,
         moving_atoms=None,
         step_size=0.05,
@@ -743,34 +742,12 @@ class IDPPSolver:
             )
 
             # output dump file for each imaegs
-            if dump_CR:
-                for i in range(self.nimages):
-                    try:
-                        with open(
-                            os.path.join(dump_dir, "dump_CR_{:02d}".format(i + 1)), "a",
-                        ) as f:
-                            f.write(
-                                self.lammps_dump_str(
-                                    path_coords[i + 1], true_forces[i], n
-                                )
-                            )
-                    except Exception:
-                        print("invlaid dump path")
-
+            if dump_cr:
+                self.dump_writer("dump_cr", dump_dir, path_coords, clash_forces, n)
+            if dump_idpp:
+                self.dump_writer("dump_idpp", dump_dir, path_coords, idpp_forces, n)
             if dump_total:
-                for i in range(self.nimages):
-                    try:
-                        with open(
-                            os.path.join(dump_dir, "dump_total_{:02d}".format(i + 1)),
-                            "a",
-                        ) as f:
-                            f.write(
-                                self.lammps_dump_str(
-                                    path_coords[i + 1], total_forces[i], n
-                                )
-                            )
-                    except Exception:
-                        print("invlaid dump path")
+                self.dump_writer("dump_total", dump_dir, path_coords, total_forces, n)
 
             # calculate displacement. disp_mat[ni][nn][3]
             disp_mat = step_size * total_forces[:, moving_atoms, :]
@@ -907,6 +884,16 @@ class IDPPSolver:
             out_str.append("\n" if is_orthogonal else "{:.6f}\n".format(lmpbox.tilt[i]))
         return "".join(out_str)
 
+    def dump_writer(self, filename, dump_dir, coords, forces, n):
+        if not os.path.exists(dump_dir):
+            os.makedirs(dump_dir)
+        for i in range(self.nimages):
+            with open(
+                os.path.join(dump_dir, "{}_{:02d}".format(filename, i + 1)), "a"
+            ) as f:
+                f.write(self.lammps_dump_str(coords[i + 1], forces[i], n))
+        return True
+
     @staticmethod
     def _get_triangular_step(
         iteration: int, half_period=5, base_step=0.05, max_step=0.1
@@ -976,10 +963,13 @@ class IDPPSolver:
             #         steric_hindered.append([ni, i, j, dist])
             # calculate cartesian dist of each atom pairs
             diff = lattice.get_all_distances(
-                frac_image_coords[ni], frac_image_coords[ni])
+                frac_image_coords[ni], frac_image_coords[ni]
+            )
             for i, j in itertools.combinations(range(self.natoms), 2):
-                if (diff[i][j] < self._get_steric_threshold(i, j, repul_tol)
-                        and diff[i][j] > steric_tol):
+                if (
+                    diff[i][j] < self._get_steric_threshold(i, j, repul_tol)
+                    and diff[i][j] > steric_tol
+                ):
                     steric_hindered.append([ni, i, j, diff[i][j]])
 
         # calculate repulsive forces
@@ -1082,14 +1072,11 @@ class IDPPSolver:
                 clash_atoms = clash_atoms | set(temp_atoms)
             # for NEB atoms and clash atoms, check if their neighbors need bonding
             atoms_set = NEB_atoms | clash_atoms
-            # print("final atoms set for image {}: {}\n".format(ni, atoms_set))
+            print("final atoms set for image {}: {}\n".format(ni, atoms_set))
             for i in atoms_set:
                 case = [ni, i]
                 atom_neighbors = lattice.get_points_in_sphere(
-                    frac_coords[ni],
-                    image_coords[ni][i],
-                    r_threshold,
-                    zip_results=True,
+                    frac_coords[ni], image_coords[ni][i], r_threshold, zip_results=True,
                 )
                 for _, d, index, _ in atom_neighbors:
                     # check if the neighbor is far enough
@@ -1172,7 +1159,6 @@ class IDPPSolver:
             "Cl": 0.99,
             "Br": 1.14,
             "I": 1.33,
-
             "W": 0.6,
         }
         if is_ionic:
@@ -1226,7 +1212,7 @@ class BondedNeighbor:
         """
         index: index of the atom in question
         n_index: the index of neighbor atom to the atom in question
-        nn_distance: the distance between two atoms 
+        nn_distance: the distance between two atoms
         """
         self.index = index
         self.n_index = n_index
