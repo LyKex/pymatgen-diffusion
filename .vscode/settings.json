@@ -16,6 +16,7 @@
         "--line-length",
         "88"
     ],
-    "vim.useCtrlKeys": false
+    "vim.useCtrlKeys": false,
+    "python.linting.banditEnabled": false
 }
 
