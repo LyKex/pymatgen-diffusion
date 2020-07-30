@@ -649,6 +649,7 @@ class IDPPSolver:
         dump_dir,
         dump_cr=True,
         dump_idpp=True,
+        con_co=1.0,
         dump_total=True,
         moving_atoms=None,
         step_size=0.05,
@@ -732,7 +733,7 @@ class IDPPSolver:
                             conjugated_cr[ni][na] = (
                                 (clash_forces[ni][na] / cr_forces_norm[ni][na])
                                 * idpp_forces_norm[ni][na])
-                true_forces = idpp_forces + conjugated_cr
+                true_forces = idpp_forces + con_co * conjugated_cr
             else:
                 true_forces = clash_forces
 
@@ -1014,6 +1015,7 @@ class IDPPSolver:
             f = (k_bonded * delta_d ** 2) * direction
 
             # apply force on atoms
+            # attractive_forces have no counter forces unless they are both in atom set
             attractive_forces[ni][i] += f
             # DEBUG monitor attractive forces
             # print(
