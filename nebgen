@@ -4,7 +4,7 @@ import configparser
 import argparse
 import time
 import os
-
+import glob
 # import pymatgen_diffusion from path
 import sys
 import importlib.util
@@ -32,14 +32,14 @@ from rmsd import rmsd_pbc
 # read config
 parser = argparse.ArgumentParser(description="Generate initial guess for NEB.")
 parser.add_argument(
-    "-i",
-    "--input",
+    "config",
     nargs=1,
     help="location of configuration file")
-parser.add_argument("-o", "--output", nargs=1, help="output directory")
+parser.add_argument("output", nargs=1, default='.', help="output directory")
+parser.add_argument("-p", "--path", nargs='?', help="given path")
 args = parser.parse_args()
 config = configparser.ConfigParser()
-config_file = args.input[0]
+config_file = args.config[0]
 try:
     config.read(config_file)
 except Exception:
@@ -48,6 +48,12 @@ except Exception:
 save_dir = args.output[0]
 if not os.path.exists(save_dir):
     print("output directory does not exit")
+    sys.exit(1)
+if args.path:
+    print(args.path)
+    path = glob.glob(os.path.join(args.path,'POSCAR*'))
+    print("args.path {}".format(args.path))
+
 
 # default
 default_conf = config["Default"]
@@ -61,6 +67,7 @@ if species:
 # IDPP parameters
 IDPP_config = config["IDPP"]
 IDPP_iter = IDPP_config.getint("max-iteration")
+IDPP_step_size = IDPP_config.getfloat("step-size", 0.05)
 IDPP_ftol = IDPP_config.getfloat("force-tolerance", 1e-5)
 IDPP_gtol = IDPP_config.getfloat("energy-tolerance", 1e-3)
 
@@ -98,17 +105,27 @@ rr_iter = rr_config.getint("max-iteration")
 rr_ftol = rr_config.getfloat("energy-tolerance", 1e-5)
 rr_gtol = rr_config.getfloat("force-tolerance", 1e-3)
 
-ini = Structure.from_file(initial_state)
-fin = Structure.from_file(final_state)
 
 # initialize IDPPSolver
-obj = IDPPSolver.from_endpoints(
-    endpoints=[ini, fin], nimages=nimages, sort_tol=0,
-)
+# linear interpolation from endpoints
+if not args.path:
+    ini = Structure.from_file(initial_state)
+    fin = Structure.from_file(final_state)
+    obj = IDPPSolver.from_endpoints(
+        endpoints=[ini, fin], nimages=nimages, sort_tol=0,
+    )
+# read whole path
+else:
+    structs = []
+    for f in path:
+        structs.append(Structure.from_file(f))
+    obj = IDPPSolver(structs)
+
 # find IDPP path
 if IDPP_iter:
     idpp_path = obj.run(
-        maxiter=IDPP_iter, tol=IDPP_ftol, gtol=IDPP_gtol, species=species
+        maxiter=IDPP_iter, tol=IDPP_ftol, gtol=IDPP_gtol, step_size=IDPP_step_size,
+        species=species
     )
     path_for_CR = idpp_path
 else:

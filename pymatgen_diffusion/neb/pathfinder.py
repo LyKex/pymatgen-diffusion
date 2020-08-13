@@ -660,6 +660,8 @@ class IDPPSolver:
         base_step=0.01,
         max_step=0.05,
         spring_const=5.0,
+        k_bonded=5.0,
+        k_steric=0.15,
         NEB_atoms=[],
         NEB_threshold=2.0,
         pi_bond=0.0,
@@ -713,31 +715,39 @@ class IDPPSolver:
         max_forces = [float("inf")]
         initial_step = step_size
         for n in tqdm(range(maxiter)):
-            # for each iteration clash force is evaluated on latest image coords
-            clash_forces = self._get_clash_forces_and_energy(
-                image_coords=path_coords[1:-1], NEB_atoms=NEB_atoms, **kwargs
-            )
 
             # true force = IDPP force + CR force
             # total force = true force (perpendicular to tangent)
             #             + spring force (along tangent)
-            if use_idpp:
-                _, idpp_forces = self._get_funcs_and_forces(path_coords)
-                # normalize CR_force
-                conjugated_cr = np.zeros(np.shape(clash_forces))
-                idpp_forces_norm = np.linalg.norm(idpp_forces, axis=2)
-                cr_forces_norm = np.linalg.norm(clash_forces, axis=2)
-                for ni in range(self.nimages):
-                    for na in range(self.natoms):
-                        if not cr_forces_norm[ni][na] == 0:
-                            conjugated_cr[ni][na] = (
-                                (clash_forces[ni][na] / cr_forces_norm[ni][na])
-                                * idpp_forces_norm[ni][na])
-                true_forces = idpp_forces + con_co * conjugated_cr
+            if k_bonded == 0 and k_steric == 0:
+                dump_cr, dump_idpp, dump_total = False, False, False
+                true_forces = np.zeros([self.nimages, self.natoms, 3])
             else:
-                true_forces = clash_forces
+                # for each iteration clash force is evaluated on latest image coords
+                clash_forces = self._get_clash_forces_and_energy(
+                    image_coords=path_coords[1:-1],
+                    NEB_atoms=NEB_atoms,
+                    k_bonded=k_bonded,
+                    k_steric=k_steric,
+                    **kwargs,
+                )
+                if use_idpp:
+                    _, idpp_forces = self._get_funcs_and_forces(path_coords)
+                    # normalize CR_force
+                    conjugated_cr = np.zeros(np.shape(clash_forces))
+                    idpp_forces_norm = np.linalg.norm(idpp_forces, axis=2)
+                    cr_forces_norm = np.linalg.norm(clash_forces, axis=2)
+                    for ni in range(self.nimages):
+                        for na in range(self.natoms):
+                            if not cr_forces_norm[ni][na] == 0:
+                                conjugated_cr[ni][na] = (
+                                    clash_forces[ni][na] / cr_forces_norm[ni][na]
+                                ) * idpp_forces_norm[ni][na]
+                    true_forces = idpp_forces + con_co * conjugated_cr
+                else:
+                    true_forces = clash_forces
 
-            # _get_total_forces requires all coords including initial and final states
+            # path_coords includes initial and final states
             total_forces = self._get_total_forces(
                 path_coords, true_forces, spring_const
             )
@@ -765,13 +775,15 @@ class IDPPSolver:
             max_forces.append(np.abs(total_forces[:, moving_atoms, :]).max())
             # stop criteria
             if max_forces[-1] < gtol:
+                print("\n>>> Total force converges! >>>")
                 break
 
             # change step size for better optimization
             if step_update_method == "decay" and max_forces[-1] < max_forces[-2]:
                 step_size = initial_step * (1 / (1 + 0.01 * n))
+
         else:
-            print("\nmax force at end of optimization: {}".format(max_forces[-1]))
+            print("\n>>> max force at end of optimization: {} >>>".format(max_forces[-1]))
             warnings.warn(
                 "CR-NEB: Maximum iteration number is reached without convergence!",
                 UserWarning,
@@ -1009,9 +1021,7 @@ class IDPPSolver:
             direction = self.get_direction_pbc(coord_pulling, coord_bonded)
 
             # get displacement and calculate force
-            delta_d = d - self._get_max_bond_length(
-                i, n_i, max_bond_tol=max_bond_tol
-            )
+            delta_d = d - self._get_max_bond_length(i, n_i, max_bond_tol=max_bond_tol)
             f = (k_bonded * delta_d ** 2) * direction
 
             # apply force on atoms
@@ -1220,9 +1230,9 @@ class BondedNeighbor:
         self.image = image
 
     def __repr__(self):
-        return ("atom index: {} neighbor index:{} " "neighbor distance: {} in image {}\n").format(
-            self.index, self.n_index, self.nn_distance, self.image
-        )
+        return (
+            "atom index: {} neighbor index:{} " "neighbor distance: {} in image {}\n"
+        ).format(self.index, self.n_index, self.nn_distance, self.image)
 
 
 class MigrationPath:

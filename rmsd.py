@@ -9,23 +9,26 @@ from pymatgen.core import Structure
 from pymatgen.util.coord import pbc_diff
 
 
-def rmsd_pbc(file_path_1, file_path_2):
+def rmsd_pbc(file_path_1, file_path_2, original_def=True):
     """
-    Calculate absolute root-mean-square diffence between two structures. No rotation nor
-    recentering will be considered. Periodic boundary condition will be considered.
+    Calculate absolute root-mean-square diffence between two structures.
+    No rotation nor recentering will be considered. Periodic boundary condition
+    will be considered.
     """
     try:
         a = Structure.from_file(filename=file_path_1)
         b = Structure.from_file(filename=file_path_2)
     except Exception:
-        print("File import failed.")
+        sys.exit("File import failed.")
 
     # check if two structures are valid for compare
     natoms = check_validity(a, b)
 
     # get fractional coords of each structure
-    a_frac = [a[i].frac_coords for i in range(natoms)]
-    b_frac = [b[i].frac_coords for i in range(natoms)]
+    # a_frac = [a[i].frac_coords for i in range(natoms)]
+    # b_frac = [b[i].frac_coords for i in range(natoms)]
+    a_frac = a.frac_coords
+    b_frac = b.frac_coords
 
     # get frac_diff considering pbc (abs(diff) <= 0.5)
     frac_diff = pbc_diff(a_frac, b_frac)
@@ -33,12 +36,13 @@ def rmsd_pbc(file_path_1, file_path_2):
     # convert to cartesian coords difference
     cart_diff = a.lattice.get_cartesian_coords(frac_diff)
 
+    if original_def:
     # original definition of RMSD
-    # return np.sqrt(np.sum(cart_diff ** 2) / natoms)
-
-    # revised definition. The top 5 deviation is considered
-    # aiming to better reflect the difference in structures
-    return np.sum(np.sort(np.abs(cart_diff))[:5]) / 5
+        return np.sqrt(np.sum(cart_diff ** 2))
+    else:
+        # revised definition. The top 5 deviation is considered
+        # aiming to better compare the difference of two similar structures
+        return np.sum(np.sort(np.abs(cart_diff))[:5]) / 5
 
 
 def check_validity(structure_a, structure_b):
