@@ -5,6 +5,7 @@ import argparse
 import time
 import os
 import glob
+
 # import pymatgen_diffusion from path
 import sys
 import importlib.util
@@ -22,8 +23,8 @@ from pathfinder import IDPPSolver
 
 module_name = "rmsd"
 spec = importlib.util.spec_from_file_location(
-    module_name,
-    "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion/rmsd.py")
+    module_name, "/mnt/c/Liugy-wd/IDPP_test/pymatgen/pymatgen-diffusion/rmsd.py"
+)
 module = importlib.util.module_from_spec(spec)
 sys.modules[module_name] = module
 spec.loader.exec_module(module)
@@ -31,12 +32,9 @@ from rmsd import rmsd_pbc
 
 # read config
 parser = argparse.ArgumentParser(description="Generate initial guess for NEB.")
-parser.add_argument(
-    "config",
-    nargs=1,
-    help="location of configuration file")
-parser.add_argument("output", nargs=1, default='.', help="output directory")
-parser.add_argument("-p", "--path", nargs='?', help="given path")
+parser.add_argument("config", nargs=1, help="location of configuration file")
+parser.add_argument("output", nargs=1, default=".", help="output directory")
+parser.add_argument("-p", "--path", nargs="?", help="given path")
 args = parser.parse_args()
 config = configparser.ConfigParser()
 config_file = args.config[0]
@@ -47,11 +45,12 @@ except Exception:
     sys.exit(1)
 save_dir = args.output[0]
 if not os.path.exists(save_dir):
-    print("output directory does not exit")
-    sys.exit(1)
+    # print("output directory does not exit")
+    # sys.exit(1)
+    os.mkdir(save_dir, mode=0o755)
 if args.path:
     print(args.path)
-    path = glob.glob(os.path.join(args.path,'POSCAR*'))
+    path = glob.glob(os.path.join(args.path, "POSCAR*"))
     print("args.path {}".format(args.path))
 
 
@@ -75,7 +74,7 @@ IDPP_gtol = IDPP_config.getfloat("energy-tolerance", 1e-3)
 CR_config = config["Clash Removal"]
 CR_iter = CR_config.getint("max-iteration")
 use_idpp = CR_config.getboolean("use-IDPP", True)
-con_co = CR_config.getfloat("conjugate-co", 1.0)
+con_co = CR_config.getfloat("conjugate-co", 1.4)
 dump_dir = CR_config.get("dump-directory", None)
 if not dump_dir:
     dump_dir = save_dir
@@ -93,10 +92,10 @@ max_bond_tol = CR_config.getfloat("bond-length-tolerance", 0.2)
 repul_tol = CR_config.getfloat("repulsive-tolerance", 0.0)
 base_step = CR_config.getfloat("base-step-size", 0.01)
 max_step = CR_config.getfloat("max-step-size", 0.05)
-r_threshold = CR_config.getfloat("neighbor-radius", 5.0)
+r_threshold = CR_config.getfloat("neighbor-radius")
 is_CR_NEB = CR_config.getboolean("use-NEB", True)
-NEB_threshold = CR_config.getfloat("NEB_threshold", 2.0)
-is_ionic = CR_config.getboolean('is-ion', False)
+NEB_threshold = CR_config.getfloat("NEB-threshold", 2.0)
+is_ionic = CR_config.getboolean("is-ion", False)
 # TODO is_log = false # turn on logging
 
 # Rerun parameters
@@ -111,9 +110,7 @@ rr_gtol = rr_config.getfloat("force-tolerance", 1e-3)
 if not args.path:
     ini = Structure.from_file(initial_state)
     fin = Structure.from_file(final_state)
-    obj = IDPPSolver.from_endpoints(
-        endpoints=[ini, fin], nimages=nimages, sort_tol=0,
-    )
+    obj = IDPPSolver.from_endpoints(endpoints=[ini, fin], nimages=nimages, sort_tol=0,)
 # read whole path
 else:
     structs = []
@@ -124,8 +121,11 @@ else:
 # find IDPP path
 if IDPP_iter:
     idpp_path = obj.run(
-        maxiter=IDPP_iter, tol=IDPP_ftol, gtol=IDPP_gtol, step_size=IDPP_step_size,
-        species=species
+        maxiter=IDPP_iter,
+        tol=IDPP_ftol,
+        gtol=IDPP_gtol,
+        step_size=IDPP_step_size,
+        species=species,
     )
     path_for_CR = idpp_path
 else:
@@ -159,6 +159,11 @@ if CR_iter and not is_CR_NEB:
 # Clash Removal NEB
 if CR_iter and is_CR_NEB:
     print("clash removal with NEB")
+    print(
+        "parameters:\nconjugate coefficient = {}\nRcut = {}\n".format(
+            con_co, r_threshold
+        )
+    )
     clash_removed_path = obj.clash_removal_NEB(
         path=path_for_CR,
         maxiter=CR_iter,
@@ -210,7 +215,9 @@ for n, struct in enumerate(result):
 # check RMSD
 for n in range(len(result) - 1):
     structure_1_path = "{}/POSCAR_{:02d}".format(save_dir, n)
-    structure_2_path = "{}/POSCAR_{:02d}".format(save_dir, n+1)
-    print("rmsd {} <-> {}: {}".format(n, n + 1,
-                                      rmsd_pbc(structure_1_path,
-                                               structure_2_path)))
+    structure_2_path = "{}/POSCAR_{:02d}".format(save_dir, n + 1)
+    print(
+        "rmsd {} <-> {}: {}".format(
+            n, n + 1, rmsd_pbc(structure_1_path, structure_2_path)
+        )
+    )

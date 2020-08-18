@@ -649,7 +649,7 @@ class IDPPSolver:
         dump_dir,
         dump_cr=True,
         dump_idpp=True,
-        con_co=1.0,
+        con_co=1.4,
         dump_total=True,
         moving_atoms=None,
         step_size=0.05,
